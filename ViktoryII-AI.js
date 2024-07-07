@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         Viktory Script
 // @namespace    http://tampermonkey.net/
-// @version      2024-05-05
+// @version      2024-07-07
 // @description  Komputer - an AI for Viktory II
-// @author       Wilbo Baggins / Stephen Montague
+// @author       Stephen William Montague
 // @match        http://gamesbyemail.com/Games/Viktory2
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=gamesbyemail.com
 // ==/UserScript==
@@ -116,127 +116,6 @@ function runKomputer(thisGame)
             break;
         default:
             console.log("Unhandled movePhase: " + thisGame.movePhase);
-    }
-}
-
-
-// Highly specific instructions for the first two turns
-function placeCapital(thisGame)
-{
-    // Explore 5 hexes, handle water.
-    let hexOrder = thisGame.getMapCustomizationData();
-    const hasWater = (hexOrder.indexOf("w") > -1) ? true : false;
-    if (hasWater)
-    {
-        while (waterCount(hexOrder) > 2)
-        {
-            thisGame.swapWaterForLand();
-            hexOrder = thisGame.getMapCustomizationData();
-        }
-        thisGame.playOptions.mapCustomizationData = [hexOrder[0], hexOrder[4], hexOrder[1], hexOrder[3], hexOrder[2]].join("");
-    }
-    thisGame.customizeMapDoAll(true);
-
-    // Place capital & explore adjacent, using a bit of advice from Peter M's strategy guide.
-    let pieceIndexChoices = (thisGame.player.team.color === 0) ? [7, 9, 24] : [36, 51, 53];
-    let pieceIndex = (thisGame.player.team.color === 0) ? getRandomItem(pieceIndexChoices) : getSecondCapitalPieceIndex(thisGame, pieceIndexChoices);
-    let destinationScreenPoint = thisGame.pieces[pieceIndex].$screenRect.getCenter();
-    thisGame.placeCapitalMouseDown(destinationScreenPoint);
-    thisGame.overlayCommitOnClick();
-    const customizeMapDelay1 = 800;
-    setTimeout(function(){
-        const waterPopup = document.getElementById("Foundation_Elemental_7_waterSwap");
-        if (waterPopup)
-        {
-            thisGame.swapWaterForLand();
-            console.log("Water swap!");
-        }
-        thisGame.customizeMapDoAll(true);
-        if (thisGame.player.team.color === 0)
-        {
-            thisGame.endMyTurn();
-            window.IS_KOMPUTER_READY = true;
-            resetKomputerButtonStyle();
-            console.log("Done.");
-        }
-        // Place first town based on specific location data. Later reserve phases use other guidance.
-        else
-        {
-            if (thisGame.movePhase === 11)
-            {
-                thisGame.reserveOnMouseDown(thisGame, function(){return true},0);
-                pieceIndex = (pieceIndex < 51) ? pieceIndexChoices[0] : (pieceIndex > 51) ? pieceIndexChoices[1]: getRandomItem(pieceIndexChoices);
-                destinationScreenPoint = thisGame.pieces[pieceIndex].$screenRect.getCenter();
-                thisGame.placeReserveOnMouseUp(destinationScreenPoint)
-                thisGame.overlayCommitOnClick();
-                const customizeMapDelay2 = 1000;
-                setTimeout(function(){
-                    const waterPopup = document.getElementById("Foundation_Elemental_7_waterSwap");
-                    if (waterPopup)
-                    {
-                        thisGame.swapWaterForLand();
-                        console.log("Water swap!");
-                    }
-                    thisGame.customizeMapDoAll(true);
-                    thisGame.reserveOnMouseDown(thisGame, function() {return true},0);
-                    thisGame.placeReserveOnMouseUp( destinationScreenPoint );
-                    thisGame.endMyTurn();
-                    window.IS_KOMPUTER_READY = true;
-                    resetKomputerButtonStyle();
-                    console.log("Done.");
-                }, customizeMapDelay2);
-            }
-        }}, customizeMapDelay1);
-}
-
-
-function waterCount(stringHexData)
-{
-      let count = 0;
-      for (let i = 0; i < stringHexData.length; i++)
-      {
-          if (stringHexData.charAt(i)==="w")
-          {
-              count++;
-          }
-      }
-      return count;
-}
-
-
-function getRandomItem(items)
-{
-    const MAX = items.length;
-    const RANDOM_INDEX = getRandomIndexExclusive(MAX);
-    return items[RANDOM_INDEX];
-}
-
-
-function getRandomIndexExclusive(max)
-{
-    return Math.floor(Math.random() * max);
-}
-
-
-function getSecondCapitalPieceIndex(thisGame, pieceIndexChoices)
-{
-    // Usually take the opposite side of the opponent, or if center, play random.
-    const randomMoveChance = 0.125;
-    if (Math.random() < randomMoveChance || thisGame.pieces[9].hasUnit(0, "C"))
-    {
-        return pieceIndexChoices.splice(getRandomIndexExclusive(pieceIndexChoices.length), 1);
-    }
-    else
-    {
-        const opponentCapitalPiece = thisGame.pieces.findCapitalPiece(0);
-        if (opponentCapitalPiece.index < 9)
-        {
-            return pieceIndexChoices.pop();
-        }
-        else
-        {
-            return pieceIndexChoices.shift();
-        }
     }
 }
 
@@ -467,13 +346,6 @@ function decideHowToContinueMove(thisGame, movableUnits, unit, finalMoveWave)
 }
 
 
-function shuffle(string)
-{
-    // Schwartzian Transform, from anonymous on Stackoverflow - see Wikipedia for description.
-    return string.split("").map(v => [v, Math.random()]).sort((a, b) => a[1] - b[1]).map(v => v[0]).join("");
-}
-
-
 function getBestMove(thisGame, possibleMoves, unit)
 {
     let bestMoveScore = -1;
@@ -499,7 +371,7 @@ function getBestMove(thisGame, possibleMoves, unit)
 function getMoveScore(thisGame, possibleMove, unit)
 {
     const piece = thisGame.pieces.findAtXY(possibleMove.x, possibleMove.y);
-    const enemyColor = thisGame.perspectiveColor === 0 ? 1 : 0;
+    const enemyColor = !thisGame.perspectiveColor;
     if (unit.isFrigate())
     {
         return getFrigateMoveScore(thisGame, piece, unit, enemyColor);
@@ -673,113 +545,9 @@ function getFrigateMoveScore(thisGame, piece, unit, enemyColor)
 }
 
 
-function hasAdjacentCivilization(thisGame, piece)
-{
-      let adjacentPiece;
-      return ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y)) != null && adjacentPiece.hasCivilization(thisGame.perspectiveColor)) ||
-          ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y)) != null && adjacentPiece.hasCivilization(thisGame.perspectiveColor)) ||
-          ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y-1)) != null && adjacentPiece.hasCivilization(thisGame.perspectiveColor)) ||
-          ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y+1)) != null && adjacentPiece.hasCivilization(thisGame.perspectiveColor)) ||
-          ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y-1)) != null && adjacentPiece.hasCivilization(thisGame.perspectiveColor)) ||
-          ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y+1)) != null && adjacentPiece.hasCivilization(thisGame.perspectiveColor));
-}
-
-
-function findAdjacentCivilization(thisGame, piece)
-{
-      let adjacentPiece;
-      return ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y)) != null && adjacentPiece.hasCivilization(thisGame.perspectiveColor)) ||
-          ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y)) != null && adjacentPiece.hasCivilization(thisGame.perspectiveColor)) ||
-          ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y-1)) != null && adjacentPiece.hasCivilization(thisGame.perspectiveColor)) ||
-          ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y+1)) != null && adjacentPiece.hasCivilization(thisGame.perspectiveColor)) ||
-          ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y-1)) != null && adjacentPiece.hasCivilization(thisGame.perspectiveColor)) ||
-          ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y+1)) != null && adjacentPiece.hasCivilization(thisGame.perspectiveColor)) ? adjacentPiece : null;
-}
-
-
-function hasAdjacentEnemyCivilization(thisGame, piece)
-{
-    let adjacentPiece;
-    return ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y)) != null && adjacentPiece.hasOpponentCivilization(thisGame.perspectiveColor)) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y)) != null && adjacentPiece.hasOpponentCivilization(thisGame.perspectiveColor)) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y-1)) != null && adjacentPiece.hasOpponentCivilization(thisGame.perspectiveColor)) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y+1)) != null && adjacentPiece.hasOpponentCivilization(thisGame.perspectiveColor)) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y-1)) != null && adjacentPiece.hasOpponentCivilization(thisGame.perspectiveColor)) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y+1)) != null && adjacentPiece.hasOpponentCivilization(thisGame.perspectiveColor));
-}
-
-
-function findAdjacentEnemyCivilization(thisGame, piece)
-{
-    let adjacentPiece;
-    return ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y)) != null && adjacentPiece.hasOpponentCivilization(thisGame.perspectiveColor)) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y)) != null && adjacentPiece.hasOpponentCivilization(thisGame.perspectiveColor)) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y-1)) != null && adjacentPiece.hasOpponentCivilization(thisGame.perspectiveColor)) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y+1)) != null && adjacentPiece.hasOpponentCivilization(thisGame.perspectiveColor)) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y-1)) != null && adjacentPiece.hasOpponentCivilization(thisGame.perspectiveColor)) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y+1)) != null && adjacentPiece.hasOpponentCivilization(thisGame.perspectiveColor)) ? adjacentPiece : null;
-}
-
-
-function hasAdjacentHiddenTerrain(thisGame, piece)
-{
-    let adjacentPiece;
-    return ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y)) != null && adjacentPiece.hidden) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y)) != null && adjacentPiece.hidden) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y-1)) != null && adjacentPiece.hidden) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y+1)) != null && adjacentPiece.hidden) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y-1)) != null && adjacentPiece.hidden) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y+1)) != null && adjacentPiece.hidden);
-}
-
-
-
-function hasAdjacentWater(thisGame, piece)
-{
-    let adjacentPiece;
-    return ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y)) != null && adjacentPiece.isWater()) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y)) != null && adjacentPiece.isWater()) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y-1)) != null && adjacentPiece.isWater()) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y+1)) != null && adjacentPiece.isWater()) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y-1)) != null && adjacentPiece.isWater()) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y+1)) != null && adjacentPiece.isWater());
-}
-
-
-function hasAdjacentEnemyArmy(thisGame, piece)
-{
-    const enemyColor = thisGame.perspectiveColor === 0 ? 1 : 0;
-    let adjacentPiece;
-    return ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y)) != null && hasArmy(adjacentPiece, enemyColor)) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y)) != null && hasArmy(adjacentPiece, enemyColor)) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y-1)) != null && hasArmy(adjacentPiece, enemyColor)) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y+1)) != null && hasArmy(adjacentPiece, enemyColor)) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y-1)) != null && hasArmy(adjacentPiece, enemyColor)) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y+1)) != null && hasArmy(adjacentPiece, enemyColor));
-}
-
-
-function hasAdjacentBattle(thisGame, piece)
-{
-    let adjacentPiece;
-    return ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y)) != null && adjacentPiece.hasBattle(thisGame.perspectiveColor, thisGame.player.team.rulerColor)) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y)) != null && adjacentPiece.hasBattle(thisGame.perspectiveColor, thisGame.player.team.rulerColor)) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y-1)) != null && adjacentPiece.hasBattle(thisGame.perspectiveColor, thisGame.player.team.rulerColor)) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y+1)) != null && adjacentPiece.hasBattle(thisGame.perspectiveColor, thisGame.player.team.rulerColor)) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y-1)) != null && adjacentPiece.hasBattle(thisGame.perspectiveColor, thisGame.player.team.rulerColor)) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y+1)) != null && adjacentPiece.hasBattle(thisGame.perspectiveColor, thisGame.player.team.rulerColor));
-}
-
-
-function hasArmy(piece, color)
-{
-    return (piece.hasInfantry(color) || piece.hasArtillery(color) || piece.hasCavalry(color));
-}
-
-
 function guessThreat(thisGame, piece)
 {
-    const enemyColor = thisGame.perspectiveColor === 0 ? 1 : 0;
+    const enemyColor = !thisGame.perspectiveColor;
     const enemyArmyUnits = getArmyUnits(thisGame, enemyColor);
     if (!enemyArmyUnits)
     {
@@ -973,9 +741,7 @@ function bombard(thisGame, unit, bombardablePoints)
                     {
                         const data = thisGame.getBattleData();
                         if (data && data.piece.defenderBattleInfo &&
-                            data.piece.defenderBattleInfo.decisionNeeded ||
-                            data && data.piece.attackerBattleInfo &&
-                            data.piece.attackerBattleInfo.decisionNeeded)
+                            data.piece.defenderBattleInfo.decisionNeeded)
                         {
                             applyHits(thisGame, data.piece.index, data, true);
                         }
@@ -1345,7 +1111,7 @@ function getBestReservable(thisGame, movingUnitType, controlsCapital)
 function sortByDistanceToEnemy(thisGame, reservables)
 {
     // Get enemy armies or towns.
-    const enemyColor = thisGame.perspectiveColor === 0 ? 1 : 0;
+    const enemyColor = !thisGame.perspectiveColor;
     let enemyArmies = getArmyUnits(thisGame, enemyColor);
     if (!enemyArmies)
     {
@@ -1377,6 +1143,217 @@ function sortByDistanceToEnemy(thisGame, reservables)
 }
 
 
+// Highly specific instructions for the first two turns
+function placeCapital(thisGame)
+{
+    // Explore 5 hexes, handle water.
+    let hexOrder = thisGame.getMapCustomizationData();
+    const hasWater = (hexOrder.indexOf("w") > -1) ? true : false;
+    if (hasWater)
+    {
+        while (waterCount(hexOrder) > 2)
+        {
+            thisGame.swapWaterForLand();
+            hexOrder = thisGame.getMapCustomizationData();
+        }
+        thisGame.playOptions.mapCustomizationData = [hexOrder[0], hexOrder[4], hexOrder[1], hexOrder[3], hexOrder[2]].join("");
+    }
+    thisGame.customizeMapDoAll(true);
+
+    // Place capital & explore adjacent, using a bit of advice from Peter M's strategy guide.
+    let pieceIndexChoices = (thisGame.player.team.color === 0) ? [7, 9, 24] : [36, 51, 53];
+    let pieceIndex = (thisGame.player.team.color === 0) ? getRandomItem(pieceIndexChoices) : getSecondCapitalPieceIndex(thisGame, pieceIndexChoices);
+    let destinationScreenPoint = thisGame.pieces[pieceIndex].$screenRect.getCenter();
+    thisGame.placeCapitalMouseDown(destinationScreenPoint);
+    thisGame.overlayCommitOnClick();
+    const customizeMapDelay1 = 800;
+    setTimeout(function(){
+        const waterPopup = document.getElementById("Foundation_Elemental_7_waterSwap");
+        if (waterPopup)
+        {
+            thisGame.swapWaterForLand();
+            console.log("Water swap!");
+        }
+        thisGame.customizeMapDoAll(true);
+        if (thisGame.player.team.color === 0)
+        {
+            thisGame.endMyTurn();
+            window.IS_KOMPUTER_READY = true;
+            resetKomputerButtonStyle();
+            console.log("Done.");
+        }
+        // Place first town based on specific location data. Later reserve phases use other guidance.
+        else
+        {
+            if (thisGame.movePhase === 11)
+            {
+                thisGame.reserveOnMouseDown(thisGame, function(){return true},0);
+                pieceIndex = (pieceIndex < 51) ? pieceIndexChoices[0] : (pieceIndex > 51) ? pieceIndexChoices[1]: getRandomItem(pieceIndexChoices);
+                destinationScreenPoint = thisGame.pieces[pieceIndex].$screenRect.getCenter();
+                thisGame.placeReserveOnMouseUp(destinationScreenPoint)
+                thisGame.overlayCommitOnClick();
+                const customizeMapDelay2 = 1000;
+                setTimeout(function(){
+                    const waterPopup = document.getElementById("Foundation_Elemental_7_waterSwap");
+                    if (waterPopup)
+                    {
+                        thisGame.swapWaterForLand();
+                        console.log("Water swap!");
+                    }
+                    thisGame.customizeMapDoAll(true);
+                    thisGame.reserveOnMouseDown(thisGame, function() {return true},0);
+                    thisGame.placeReserveOnMouseUp( destinationScreenPoint );
+                    thisGame.endMyTurn();
+                    window.IS_KOMPUTER_READY = true;
+                    resetKomputerButtonStyle();
+                    console.log("Done.");
+                }, customizeMapDelay2);
+            }
+        }}, customizeMapDelay1);
+}
+
+
+function waterCount(stringHexData)
+{
+      let count = 0;
+      for (let i = 0; i < stringHexData.length; i++)
+      {
+          if (stringHexData.charAt(i)==="w")
+          {
+              count++;
+          }
+      }
+      return count;
+}
+
+
+function getSecondCapitalPieceIndex(thisGame, pieceIndexChoices)
+{
+    // Usually take the opposite side of the opponent, or if center, play random.
+    const randomMoveChance = 0.125;
+    if (Math.random() < randomMoveChance || thisGame.pieces[9].hasUnit(0, "C"))
+    {
+        return pieceIndexChoices.splice(getRandomIndexExclusive(pieceIndexChoices.length), 1);
+    }
+    else
+    {
+        const opponentCapitalPiece = thisGame.pieces.findCapitalPiece(0);
+        if (opponentCapitalPiece.index < 9)
+        {
+            return pieceIndexChoices.pop();
+        }
+        else
+        {
+            return pieceIndexChoices.shift();
+        }
+    }
+}
+
+
+function hasAdjacentCivilization(thisGame, piece)
+{
+      let adjacentPiece;
+      return ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y)) != null && adjacentPiece.hasCivilization(thisGame.perspectiveColor)) ||
+          ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y)) != null && adjacentPiece.hasCivilization(thisGame.perspectiveColor)) ||
+          ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y-1)) != null && adjacentPiece.hasCivilization(thisGame.perspectiveColor)) ||
+          ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y+1)) != null && adjacentPiece.hasCivilization(thisGame.perspectiveColor)) ||
+          ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y-1)) != null && adjacentPiece.hasCivilization(thisGame.perspectiveColor)) ||
+          ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y+1)) != null && adjacentPiece.hasCivilization(thisGame.perspectiveColor));
+}
+
+
+function findAdjacentCivilization(thisGame, piece)
+{
+      let adjacentPiece;
+      return ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y)) != null && adjacentPiece.hasCivilization(thisGame.perspectiveColor)) ||
+          ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y)) != null && adjacentPiece.hasCivilization(thisGame.perspectiveColor)) ||
+          ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y-1)) != null && adjacentPiece.hasCivilization(thisGame.perspectiveColor)) ||
+          ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y+1)) != null && adjacentPiece.hasCivilization(thisGame.perspectiveColor)) ||
+          ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y-1)) != null && adjacentPiece.hasCivilization(thisGame.perspectiveColor)) ||
+          ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y+1)) != null && adjacentPiece.hasCivilization(thisGame.perspectiveColor)) ? adjacentPiece : null;
+}
+
+
+function hasAdjacentEnemyCivilization(thisGame, piece)
+{
+    let adjacentPiece;
+    return ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y)) != null && adjacentPiece.hasOpponentCivilization(thisGame.perspectiveColor)) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y)) != null && adjacentPiece.hasOpponentCivilization(thisGame.perspectiveColor)) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y-1)) != null && adjacentPiece.hasOpponentCivilization(thisGame.perspectiveColor)) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y+1)) != null && adjacentPiece.hasOpponentCivilization(thisGame.perspectiveColor)) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y-1)) != null && adjacentPiece.hasOpponentCivilization(thisGame.perspectiveColor)) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y+1)) != null && adjacentPiece.hasOpponentCivilization(thisGame.perspectiveColor));
+}
+
+
+function findAdjacentEnemyCivilization(thisGame, piece)
+{
+    let adjacentPiece;
+    return ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y)) != null && adjacentPiece.hasOpponentCivilization(thisGame.perspectiveColor)) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y)) != null && adjacentPiece.hasOpponentCivilization(thisGame.perspectiveColor)) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y-1)) != null && adjacentPiece.hasOpponentCivilization(thisGame.perspectiveColor)) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y+1)) != null && adjacentPiece.hasOpponentCivilization(thisGame.perspectiveColor)) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y-1)) != null && adjacentPiece.hasOpponentCivilization(thisGame.perspectiveColor)) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y+1)) != null && adjacentPiece.hasOpponentCivilization(thisGame.perspectiveColor)) ? adjacentPiece : null;
+}
+
+
+function hasAdjacentHiddenTerrain(thisGame, piece)
+{
+    let adjacentPiece;
+    return ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y)) != null && adjacentPiece.hidden) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y)) != null && adjacentPiece.hidden) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y-1)) != null && adjacentPiece.hidden) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y+1)) != null && adjacentPiece.hidden) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y-1)) != null && adjacentPiece.hidden) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y+1)) != null && adjacentPiece.hidden);
+}
+
+
+
+function hasAdjacentWater(thisGame, piece)
+{
+    let adjacentPiece;
+    return ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y)) != null && adjacentPiece.isWater()) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y)) != null && adjacentPiece.isWater()) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y-1)) != null && adjacentPiece.isWater()) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y+1)) != null && adjacentPiece.isWater()) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y-1)) != null && adjacentPiece.isWater()) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y+1)) != null && adjacentPiece.isWater());
+}
+
+
+function hasAdjacentEnemyArmy(thisGame, piece)
+{
+    const enemyColor = !thisGame.perspectiveColor;
+    let adjacentPiece;
+    return ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y)) != null && hasArmy(adjacentPiece, enemyColor)) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y)) != null && hasArmy(adjacentPiece, enemyColor)) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y-1)) != null && hasArmy(adjacentPiece, enemyColor)) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y+1)) != null && hasArmy(adjacentPiece, enemyColor)) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y-1)) != null && hasArmy(adjacentPiece, enemyColor)) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y+1)) != null && hasArmy(adjacentPiece, enemyColor));
+}
+
+
+function hasAdjacentBattle(thisGame, piece)
+{
+    let adjacentPiece;
+    return ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y)) != null && adjacentPiece.hasBattle(thisGame.perspectiveColor, thisGame.player.team.rulerColor)) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y)) != null && adjacentPiece.hasBattle(thisGame.perspectiveColor, thisGame.player.team.rulerColor)) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y-1)) != null && adjacentPiece.hasBattle(thisGame.perspectiveColor, thisGame.player.team.rulerColor)) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y+1)) != null && adjacentPiece.hasBattle(thisGame.perspectiveColor, thisGame.player.team.rulerColor)) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y-1)) != null && adjacentPiece.hasBattle(thisGame.perspectiveColor, thisGame.player.team.rulerColor)) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y+1)) != null && adjacentPiece.hasBattle(thisGame.perspectiveColor, thisGame.player.team.rulerColor));
+}
+
+
+function hasArmy(piece, color)
+{
+    return (piece.hasInfantry(color) || piece.hasArtillery(color) || piece.hasCavalry(color));
+}
+
+
 function getArmyUnits(thisGame, color)
 {
     let armies = [];
@@ -1396,6 +1373,27 @@ function getArmyUnits(thisGame, color)
         }
     }
     return (armies.length > 0 ? armies : null );
+}
+
+
+function getRandomItem(items)
+{
+    const MAX = items.length;
+    const RANDOM_INDEX = getRandomIndexExclusive(MAX);
+    return items[RANDOM_INDEX];
+}
+
+
+function getRandomIndexExclusive(max)
+{
+    return Math.floor(Math.random() * max);
+}
+
+
+function shuffle(string)
+{
+    // Schwartzian Transform, from anonymous on Stackoverflow - see Wikipedia for description.
+    return string.split("").map(v => [v, Math.random()]).sort((a, b) => a[1] - b[1]).map(v => v[0]).join("");
 }
 
 
