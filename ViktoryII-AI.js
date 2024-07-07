@@ -3,7 +3,7 @@
 // @namespace    http://tampermonkey.net/
 // @version      2024-07-07
 // @description  Komputer - an AI for Viktory II
-// @author       Stephen William Montague
+// @author       Stephen Wilbo Montague
 // @match        http://gamesbyemail.com/Games/Viktory2
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=gamesbyemail.com
 // ==/UserScript==
@@ -261,7 +261,7 @@ async function moveEachUnitByInterval(thisGame, movableUnits, intervalPeriod)
                 const possibleMoves = unit.getMovables();
                 if (possibleMoves)
                 {
-                    // Decide destination and make move.
+                    // Decide best move, or maybe don't accept any move to stay.
                     const pieceIndex = getBestMove(thisGame, possibleMoves, unit).index;
                     const shouldAcceptMove = decideMoveAcceptance(thisGame, unit, pieceIndex);
                     if (shouldAcceptMove)
@@ -447,7 +447,11 @@ function getMoveScore(thisGame, possibleMove, unit)
             {
                 if (Math.random() < 0.5)
                 {
-                    window.isManeuveringToAttack = true;
+                    // If the unit boards a frigate, don't raise the maneuvering flag, so that the frigate can take control.
+                    if (!piece.hasFrigate(thisGame.perspectiveColor))
+                    {
+                        window.isManeuveringToAttack = true;
+                    }
                     return 1;
                 }
             }
