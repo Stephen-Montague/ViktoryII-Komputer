@@ -1,0 +1,17 @@
+{
+    "action": {},
+    "author": "stephen.w.montague@gmail.com",
+    "background": {
+        "service_worker": "worker.js"
+    },
+    "description": "A Komputer opponent / autopilot for Viktory II.",
+    "icons": {
+        "48": "img/icon-frigate-48.png",
+        "128": "img/icon-frigate-128.png"
+    },
+    "manifest_version":3,
+    "name": "Viktory II Komputer",
+    "permissions": ["scripting", "tabs"],
+    "host_permissions": ["http://gamesbyemail.com/Games/Viktory2*"],
+    "version": "2024.10.3"
+}
