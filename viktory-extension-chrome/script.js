@@ -171,7 +171,7 @@ function moveUnits(thisGame)
             case 0: {
                 console.log("May move land units.");
                 let landUnits = findAvailableLandUnits(thisGame, thisGame.perspectiveColor);
-                orderFromFarthestToEnemy(thisGame, landUnits);
+                orderFromFarthestToEnemy(thisGame, landUnits, false);
                 moveEachUnit(thisGame, landUnits, moveIntervalPeriod, plan);
                 break;
             }
@@ -240,7 +240,7 @@ function findAvailableLandUnits(thisGame, color)
 }
 
 
-function orderFromFarthestToEnemy(thisGame, units)
+function orderFromFarthestToEnemy(thisGame, units, reverse)
 {
     const enemyColor = !thisGame.perspectiveColor * 1;
     let enemyArmies = getArmyUnits(thisGame, enemyColor);
@@ -248,7 +248,6 @@ function orderFromFarthestToEnemy(thisGame, units)
     {
         return;
     }
-    let minimumUnitToEnemyDistances = []
     for (const unit of units)
     {
         let minDistance = Number.MAX_VALUE;
@@ -260,9 +259,14 @@ function orderFromFarthestToEnemy(thisGame, units)
                 minDistance = distance;
             }
         }
-        minimumUnitToEnemyDistances.push(minDistance);
+        unit.minDistanceToEnemy = minDistance;
     }
-    units.sort(function(a, b){ return minimumUnitToEnemyDistances[units.indexOf(a)] - minimumUnitToEnemyDistances[units.indexOf(b)] });
+    units.sort(function(a, b){ return b.minDistanceToEnemy - a.minDistanceToEnemy });
+    // This hack drives me crazy, but it's necessary for now.  
+    if (reverse)
+    {
+        units.reverse();
+    }
 }
 
 
@@ -862,17 +866,105 @@ function calculateDefensivePower(thisGame, piece, color)
 function guessThreat(thisGame, piece)
 {
     const enemyColor = !thisGame.perspectiveColor * 1;
+    thisGame.pieces.addNeededPennants(enemyColor, enemyColor, false);
+    let threat = guessArmyThreat(thisGame, piece, enemyColor);
+    thisGame.pieces.removePennants(enemyColor, false);
+    const enemyFrigates = findFrigates(thisGame, enemyColor);
+    for (const frigate of enemyFrigates)
+    {
+        // Possible todo: count all units that can be carried to target, not just cargo & adjacents, without any double-count.
+        const hasCargo = frigate.cargo.length > 0;
+        const hasAdjacentLoadableArmy = hasAdjacentEnemyArmy(thisGame, frigate.piece);
+        if (!hasCargo && !hasAdjacentLoadableArmy)
+        {
+            continue;                
+        }
+        let amphibArmyCount = 0;
+        // If necessary, add some dummy cargo to get all possible landing points.
+        maybeAddImaginaryCargo(frigate, hasCargo);
+        const inRangePoints = getFrigateMovables(frigate);
+        removeImaginaryCargo(frigate);    
+        if (!inRangePoints)
+        {
+            continue;
+        }
+        for (const point of inRangePoints)
+        {
+            if (point.x === piece.boardPoint.x && point.y === piece.boardPoint.y)
+            {
+                if (hasCargo)
+                {
+                    amphibArmyCount += frigate.cargo.length;
+                    if (!threat.hasInfantry && frigate.carriesCargo("i"))
+                    {
+                        threat.hasInfantry = true
+                    }
+                    if (!threat.hasCavalry && frigate.carriesCargo("c"))
+                    {
+                        threat.hasCavalry = true;
+                    }
+                    if (!threat.hasArtillery && frigate.carriesCargo("a"))
+                    {
+                        threat.hasArtillery = true;
+                    }
+                }
+                const frigateCapacity = 3;
+                let adjacentEnemyArmyCount = 0;
+                let hasFullLoadPotential = false;
+                if (amphibArmyCount < frigateCapacity && hasAdjacentLoadableArmy)
+                {
+                    const adjacentPieceIndices = frigate.piece.getAdjacentIndecies(1);
+                    for (const adjacentPieceIndex of adjacentPieceIndices)
+                    {
+                        adjacentEnemyArmyCount += thisGame.pieces[adjacentPieceIndex].getMilitaryUnitCount(enemyColor);
+                        if (adjacentEnemyArmyCount + amphibArmyCount >= frigateCapacity)
+                        {
+                            hasFullLoadPotential = true;
+                            break;
+                        }
+                    }
+                    amphibArmyCount = hasFullLoadPotential ? frigateCapacity : amphibArmyCount + adjacentEnemyArmyCount;
+                }
+                // Frigate threat confirmed, so skip other inRangePoints.
+                break; 
+            } // End if point === piece.boardPoint
+        } // End for each point
+        threat.count += amphibArmyCount;
+    } // End for each frigate
+    // Estimate likely number of rolls, based on enemy count & type.
+    const attackVectorBonus = threat.count < 2 ? 0 : threat.count < 4 ? 1 : threat.count < 6 ? 2 : threat.count < 10 ? 3 : 4;
+    const threatRollCount = attackVectorBonus + threat.hasInfantry + threat.hasCavalry + threat.hasArtillery;
+    // Weight to favor rolls and combine to estimate threat.
+    return ((2 * threatRollCount) + threat.count);
+}
+
+
+function maybeAddImaginaryCargo(frigate, hasCargo)
+{
+    if (!hasCargo)
+    {
+        frigate.cargo = "imaginary";
+    }
+}
+
+
+function removeImaginaryCargo(frigate)
+{
+    if (frigate.cargo === "imaginary")
+    {
+        frigate.cargo = "";
+    }
+}
+
+
+function guessArmyThreat(thisGame, piece, enemyColor)
+{
+    let threat = {count: 0, hasInfantry: false, hasCavalry : false, hasArtillery: false};
     const enemyArmyUnits = getArmyUnits(thisGame, enemyColor);
     if (!enemyArmyUnits)
     {
-        return 0;
+        return threat;
     }
-
-    let threatCount = 0;
-    let hasInfantry = false;
-    let hasCavalry = false;
-    let hasArtillery = false;
-
     for (const unit of enemyArmyUnits)
     {
         let inRangePoints = unit.getMovables();
@@ -884,81 +976,27 @@ function guessThreat(thisGame, piece)
         {
             if (point.x === piece.boardPoint.x && point.y === piece.boardPoint.y)
             {
-                threatCount++;
-                if (!hasInfantry && unit.isInfantry())
+                threat.count++;
+                if (!threat.hasInfantry && unit.isInfantry())
                 {
-                    hasInfantry = true
+                    threat.hasInfantry = true
                     break;
                 }
-                if (!hasCavalry && unit.isCavalry())
+                if (!threat.hasCavalry && unit.isCavalry())
                 {
-                    hasCavalry = true;
+                    threat.hasCavalry = true;
                     break;
                 }
-                if (!hasArtillery && unit.isArtillery())
+                if (!threat.hasArtillery && unit.isArtillery())
                 {
-                    hasArtillery = true;
+                    threat.hasArtillery = true;
                     break;
                 }
                 break;
             }
         }
     }
-    const enemyFrigates = findFrigates(thisGame, enemyColor);
-    for (const frigate of enemyFrigates)
-    {
-        let amphibEnemyCount = 0;
-        let inRangePoints = frigate.getMovables();
-        if (!inRangePoints)
-        {
-            continue;
-        }
-        for (const point of inRangePoints)
-        {
-            if (point.x === piece.boardPoint.x && point.y === piece.boardPoint.y)
-            {
-                if (frigate.cargo.length > 0)
-                {
-                    amphibEnemyCount += frigate.cargo.length;
-                    if (!hasInfantry && frigate.carriesCargo("i"))
-                    {
-                        hasInfantry = true
-                    }
-                    if (!hasCavalry && frigate.carriesCargo("c"))
-                    {
-                        hasCavalry = true;
-                    }
-                    if (!hasArtillery && frigate.carriesCargo("a"))
-                    {
-                        hasArtillery = true;
-                    }
-                }
-                const frigateCapacity = 3;
-                let loadableUnitCount = 0;
-                let hasFullCapacityPotential = false;
-                if (amphibEnemyCount < frigateCapacity && hasAdjacentEnemyArmy(thisGame, frigate.piece))
-                {
-                    const adjacentPieceIndices = frigate.piece.getAdjacentIndecies(1);
-                    for (const adjacentPieceIndex of adjacentPieceIndices)
-                    {
-                        loadableUnitCount += thisGame.pieces[adjacentPieceIndex].getMilitaryUnitCount(enemyColor);
-                        if (loadableUnitCount + amphibEnemyCount >= frigateCapacity)
-                        {
-                            hasFullCapacityPotential = true;
-                            break;
-                        }
-                    }
-                    amphibEnemyCount = hasFullCapacityPotential ? frigateCapacity : amphibEnemyCount + loadableUnitCount;
-                }
-            } // End if point === inRange
-        } // End for each point
-        threatCount += amphibEnemyCount;
-    } // End for each frigate
-    // Estimate likely number of rolls, based on enemy count & type.
-    const attackVectorBonus = threatCount < 2 ? 0 : threatCount < 4 ? 1 : threatCount < 6 ? 2 : threatCount < 10 ? 3 : 4;
-    const threatRollCount = attackVectorBonus + hasInfantry + hasCavalry + hasArtillery;
-    // Weight to favor rolls and combine to estimate threat.
-    return ((2 * threatRollCount) + threatCount);
+    return threat;
 }
 
 
@@ -1894,7 +1932,7 @@ function maybeRecallTroops(thisGame)
 function getPrioritzedRecallUnits(thisGame, units)
 {
     // Avoid recall of troops near the enemy, as these may be pinned or holding a seige. 
-    orderFromFarthestToEnemy(thisGame, units);
+    orderFromFarthestToEnemy(thisGame, units, true);
     let primaryRecall = [];
     let secondaryRecall = [];
     let tertiaryRecall = [];
@@ -1948,7 +1986,7 @@ function hasThreat(thisGame, piece)
 function hasGraveDanger(thisGame, civPiece)
 {
     const weightedDangerThreshold = (civPiece.hasTown(thisGame.perspectiveColor) && !civPiece.isMountain()) ? 0 : 3;
-    return (civPiece.countMilitaryUnits(civPiece.units) === 0 && (guessThreat(thisGame, civPiece) > weightedDangerThreshold));
+    return ((civPiece.countMilitaryUnits(civPiece.units) === 0) && (guessThreat(thisGame, civPiece) > weightedDangerThreshold));
 }
 
 
