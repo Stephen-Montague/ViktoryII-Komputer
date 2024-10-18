@@ -2000,7 +2000,8 @@ function maybeRecallFrigatesToPort(thisGame)
             for (const frigate of frigates)
             {
                 // Skip any frigate with cargo, with a pin, or supporting a friendly civ.  
-                if (frigate.hasUnloadables() || hasAdjacentEnemyTown(thisGame, frigate.piece) || hasAdjacentFriendlyCiv(thisGame, frigate.piece)) 
+                if (frigate.hasUnloadables() || hasAdjacentEnemyTown(thisGame, frigate.piece) || 
+                (hasAdjacentFriendlyCiv(thisGame, frigate.piece) && hasThreat(thisGame, findAdjacentCivilization(thisGame, frigate.piece)))) 
                 {
                     continue;
                 }
