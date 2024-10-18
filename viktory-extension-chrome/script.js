@@ -1401,8 +1401,11 @@ function placeReserveUnit(thisGame){
            fixPiecesPendingValue(thisGame, invalidPiece)
         }
         // Maybe recall units.
-        maybeRecallTroops(thisGame);
-        maybeRecallFrigatesToPort(thisGame);
+        if (!thisGame.hasBattlesPending)
+        {
+            maybeRecallTroops(thisGame);
+            maybeRecallFrigatesToPort(thisGame);
+        }
         // Handle reserve battles. 
         const battlePiece = findNextBattle(thisGame);
         if (battlePiece)
