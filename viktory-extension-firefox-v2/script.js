@@ -93,7 +93,7 @@ function resetGlobals(resetButton = false)
     window.isBombarding = false;
     window.isUnloading = false;
     window.isManeuveringToAttack = false;
-    window.isBattleSelected = false;
+    window.hasBattleBegun = false;
     window.gameVersion = GamesByEmail.findFirstGame().$Foundation_$registry_index;
     window.currentPlayerTurn = Foundation.$registry[gameVersion].perspectiveColor;
     window.isKomputerReady = false;
@@ -171,7 +171,7 @@ function moveUnits(thisGame)
             case 0: {
                 console.log("May move land units.");
                 let landUnits = findAvailableLandUnits(thisGame, thisGame.perspectiveColor);
-                orderFromFarthestToEnemy(thisGame, landUnits);
+                orderFromFarthestToEnemy(thisGame, landUnits, false);
                 moveEachUnit(thisGame, landUnits, moveIntervalPeriod, plan);
                 break;
             }
@@ -240,7 +240,7 @@ function findAvailableLandUnits(thisGame, color)
 }
 
 
-function orderFromFarthestToEnemy(thisGame, units)
+function orderFromFarthestToEnemy(thisGame, units, reverse)
 {
     const enemyColor = !thisGame.perspectiveColor * 1;
     let enemyArmies = getArmyUnits(thisGame, enemyColor);
@@ -248,7 +248,6 @@ function orderFromFarthestToEnemy(thisGame, units)
     {
         return;
     }
-    let minimumUnitToEnemyDistances = []
     for (const unit of units)
     {
         let minDistance = Number.MAX_VALUE;
@@ -260,9 +259,14 @@ function orderFromFarthestToEnemy(thisGame, units)
                 minDistance = distance;
             }
         }
-        minimumUnitToEnemyDistances.push(minDistance);
+        unit.minDistanceToEnemy = minDistance;
     }
-    units.sort(function(a, b){ return minimumUnitToEnemyDistances[units.indexOf(a)] - minimumUnitToEnemyDistances[units.indexOf(b)] });
+    units.sort(function(a, b){ return b.minDistanceToEnemy - a.minDistanceToEnemy });
+    // This hack drives me crazy, but it's necessary for now.  
+    if (reverse)
+    {
+        units.reverse();
+    }
 }
 
 
@@ -271,8 +275,8 @@ function findFrigates(thisGame, color)
     let frigates = [];
     for (const piece of thisGame.pieces)
     {
-        // Skip reserve units
-        if (piece.valueIndex === - 1)
+        // Skip reserves and any battle.
+        if (piece.valueIndex === - 1 || piece.hasBattle(thisGame.perspectiveColor, -1))
         {
             continue;
         }
@@ -365,8 +369,8 @@ async function moveEachUnit(thisGame, movableUnits, intervalPeriod)
                         const destinationScreenPoint = thisGame.pieces[pieceIndex].$screenRect.getCenter();
                         moveUnitSimulateMouseUp(thisGame, destinationScreenPoint);
                         // Commit to explore after some processing time.
-                        const normalPopup = document.getElementById("Foundation_Elemental_7_overlayCommit");
-                        if (normalPopup || document.getElementById("Foundation_Elemental_7_customizeMapDoAll"))
+                        const normalPopup = document.getElementById("Foundation_Elemental_" + gameVersion + "_overlayCommit");
+                        if (normalPopup || document.getElementById("Foundation_Elemental_" + gameVersion + "_customizeMapDoAll"))
                         {
                             window.isExploring = true;
                             if (normalPopup)
@@ -469,7 +473,7 @@ function isNotValidUnit(thisGame, unit)
 
 function settleExploredTerrain(thisGame, unit)
 {
-    const waterPopup = document.getElementById("Foundation_Elemental_7_waterSwap");
+    const waterPopup = document.getElementById("Foundation_Elemental_" + gameVersion + "_waterSwap");
     if (waterPopup)
     {
         thisGame.swapWaterForLand();
@@ -862,17 +866,105 @@ function calculateDefensivePower(thisGame, piece, color)
 function guessThreat(thisGame, piece)
 {
     const enemyColor = !thisGame.perspectiveColor * 1;
+    thisGame.pieces.addNeededPennants(enemyColor, enemyColor, false);
+    let threat = guessArmyThreat(thisGame, piece, enemyColor);
+    thisGame.pieces.removePennants(enemyColor, false);
+    const enemyFrigates = findFrigates(thisGame, enemyColor);
+    for (const frigate of enemyFrigates)
+    {
+        // Possible todo: count all units that can be carried to target, not just cargo & adjacents, without any double-count.
+        const hasCargo = frigate.cargo.length > 0;
+        const hasAdjacentLoadableArmy = hasAdjacentEnemyArmy(thisGame, frigate.piece);
+        if (!hasCargo && !hasAdjacentLoadableArmy)
+        {
+            continue;                
+        }
+        let amphibArmyCount = 0;
+        // If necessary, add some dummy cargo to get all possible landing points.
+        maybeAddImaginaryCargo(frigate, hasCargo);
+        const inRangePoints = getFrigateMovables(frigate);
+        removeImaginaryCargo(frigate);    
+        if (!inRangePoints)
+        {
+            continue;
+        }
+        for (const point of inRangePoints)
+        {
+            if (point.x === piece.boardPoint.x && point.y === piece.boardPoint.y)
+            {
+                if (hasCargo)
+                {
+                    amphibArmyCount += frigate.cargo.length;
+                    if (!threat.hasInfantry && frigate.carriesCargo("i"))
+                    {
+                        threat.hasInfantry = true
+                    }
+                    if (!threat.hasCavalry && frigate.carriesCargo("c"))
+                    {
+                        threat.hasCavalry = true;
+                    }
+                    if (!threat.hasArtillery && frigate.carriesCargo("a"))
+                    {
+                        threat.hasArtillery = true;
+                    }
+                }
+                const frigateCapacity = 3;
+                let adjacentEnemyArmyCount = 0;
+                let hasFullLoadPotential = false;
+                if (amphibArmyCount < frigateCapacity && hasAdjacentLoadableArmy)
+                {
+                    const adjacentPieceIndices = frigate.piece.getAdjacentIndecies(1);
+                    for (const adjacentPieceIndex of adjacentPieceIndices)
+                    {
+                        adjacentEnemyArmyCount += thisGame.pieces[adjacentPieceIndex].getMilitaryUnitCount(enemyColor);
+                        if (adjacentEnemyArmyCount + amphibArmyCount >= frigateCapacity)
+                        {
+                            hasFullLoadPotential = true;
+                            break;
+                        }
+                    }
+                    amphibArmyCount = hasFullLoadPotential ? frigateCapacity : amphibArmyCount + adjacentEnemyArmyCount;
+                }
+                // Frigate threat confirmed, so skip other inRangePoints.
+                break; 
+            } // End if point === piece.boardPoint
+        } // End for each point
+        threat.count += amphibArmyCount;
+    } // End for each frigate
+    // Estimate likely number of rolls, based on enemy count & type.
+    const attackVectorBonus = threat.count < 2 ? 0 : threat.count < 4 ? 1 : threat.count < 6 ? 2 : threat.count < 10 ? 3 : 4;
+    const threatRollCount = attackVectorBonus + threat.hasInfantry + threat.hasCavalry + threat.hasArtillery;
+    // Weight to favor rolls and combine to estimate threat.
+    return ((2 * threatRollCount) + threat.count);
+}
+
+
+function maybeAddImaginaryCargo(frigate, hasCargo)
+{
+    if (!hasCargo)
+    {
+        frigate.cargo = "romulanAle";
+    }
+}
+
+
+function removeImaginaryCargo(frigate)
+{
+    if (frigate.cargo === "romulanAle")
+    {
+        frigate.cargo = "";
+    }
+}
+
+
+function guessArmyThreat(thisGame, piece, enemyColor)
+{
+    let threat = {count: 0, hasInfantry: false, hasCavalry : false, hasArtillery: false};
     const enemyArmyUnits = getArmyUnits(thisGame, enemyColor);
     if (!enemyArmyUnits)
     {
-        return 0;
+        return threat;
     }
-
-    let threatCount = 0;
-    let hasInfantry = false;
-    let hasCavalry = false;
-    let hasArtillery = false;
-
     for (const unit of enemyArmyUnits)
     {
         let inRangePoints = unit.getMovables();
@@ -884,81 +976,27 @@ function guessThreat(thisGame, piece)
         {
             if (point.x === piece.boardPoint.x && point.y === piece.boardPoint.y)
             {
-                threatCount++;
-                if (!hasInfantry && unit.isInfantry())
+                threat.count++;
+                if (!threat.hasInfantry && unit.isInfantry())
                 {
-                    hasInfantry = true
+                    threat.hasInfantry = true
                     break;
                 }
-                if (!hasCavalry && unit.isCavalry())
+                if (!threat.hasCavalry && unit.isCavalry())
                 {
-                    hasCavalry = true;
+                    threat.hasCavalry = true;
                     break;
                 }
-                if (!hasArtillery && unit.isArtillery())
+                if (!threat.hasArtillery && unit.isArtillery())
                 {
-                    hasArtillery = true;
+                    threat.hasArtillery = true;
                     break;
                 }
                 break;
             }
         }
     }
-    const enemyFrigates = findFrigates(thisGame, enemyColor);
-    for (const frigate of enemyFrigates)
-    {
-        let amphibEnemyCount = 0;
-        let inRangePoints = frigate.getMovables();
-        if (!inRangePoints)
-        {
-            continue;
-        }
-        for (const point of inRangePoints)
-        {
-            if (point.x === piece.boardPoint.x && point.y === piece.boardPoint.y)
-            {
-                if (frigate.cargo.length > 0)
-                {
-                    amphibEnemyCount += frigate.cargo.length;
-                    if (!hasInfantry && frigate.carriesCargo("i"))
-                    {
-                        hasInfantry = true
-                    }
-                    if (!hasCavalry && frigate.carriesCargo("c"))
-                    {
-                        hasCavalry = true;
-                    }
-                    if (!hasArtillery && frigate.carriesCargo("a"))
-                    {
-                        hasArtillery = true;
-                    }
-                }
-                const frigateCapacity = 3;
-                let loadableUnitCount = 0;
-                let hasFullCapacityPotential = false;
-                if (amphibEnemyCount < frigateCapacity && hasAdjacentEnemyArmy(thisGame, frigate.piece))
-                {
-                    const adjacentPieceIndices = frigate.piece.getAdjacentIndecies(1);
-                    for (const adjacentPieceIndex of adjacentPieceIndices)
-                    {
-                        loadableUnitCount += thisGame.pieces[adjacentPieceIndex].getMilitaryUnitCount(enemyColor);
-                        if (loadableUnitCount + amphibEnemyCount >= frigateCapacity)
-                        {
-                            hasFullCapacityPotential = true;
-                            break;
-                        }
-                    }
-                    amphibEnemyCount = hasFullCapacityPotential ? frigateCapacity : amphibEnemyCount + loadableUnitCount;
-                }
-            } // End if point === inRange
-        } // End for each point
-        threatCount += amphibEnemyCount;
-    } // End for each frigate
-    // Estimate likely number of rolls, based on enemy count & type.
-    const attackVectorBonus = threatCount < 2 ? 0 : threatCount < 4 ? 1 : threatCount < 6 ? 2 : threatCount < 10 ? 3 : 4;
-    const threatRollCount = attackVectorBonus + hasInfantry + hasCavalry + hasArtillery;
-    // Weight to favor rolls and combine to estimate threat.
-    return ((2 * threatRollCount) + threatCount);
+    return threat;
 }
 
 
@@ -1169,29 +1207,30 @@ function findNextBattle(thisGame)
 
 function fightBattle(thisGame, battlePiece, isReserveBattle = false)
 {
-    // Clear any exploration popup
-    const explorationPopup = document.getElementById("Foundation_Elemental_7_overlayCommit");
-    if (explorationPopup)
+    // Clear any exploration popup.
+    const explorationPopup = document.getElementById("Foundation_Elemental_" + gameVersion + "_overlayCommit");
+    const endTurnCommit = document.getElementById("Foundation_Elemental_" + gameVersion + "_endMyTurn");
+    if (explorationPopup && !endTurnCommit)
     {
         thisGame.overlayCommitOnClick();
     }
-    // Select battle
-    if (!window.isBattleSelected)
+    // Select battle.
+    if (!window.hasBattleBegun)
     {
+        window.hasBattleBegun = true;
         thisGame.moveUnitsMouseDown(battlePiece.$screenRect.getCenter());
-        window.isBattleSelected = true;
     }
-    // Do prebattle artillery
-    if (document.getElementById("Foundation_Elemental_7_battleOk"))
+    // Do prebattle artillery.
+    if (document.getElementById("Foundation_Elemental_" + gameVersion + "_battleOk"))
     {
         battlePiece.preBattleOkClick(thisGame.player.team.color);
     }
     // Roll loop
-    const rollDelay = 200;
+    const rollDelay = 400;
     setTimeout(function roll(){
         thisGame.overlayCommitOnClick();
         // Apply hits.
-        const applyHitsDelay = 200;
+        const applyHitsDelay = 400;
         setTimeout(function(){
             if (thisGame.battleData)
             {
@@ -1204,29 +1243,57 @@ function fightBattle(thisGame, battlePiece, isReserveBattle = false)
                     applyHits(thisGame, battlePiece.index, data);
                 }
             }
-            // Close battle after review time, if game not won, then reroll or continue game.
+            // Roll again or close after review, then continue game / find next battle.
             const battleReviewDelay = 1600;
             setTimeout(function(){
-                if (thisGame.movePhase !== 0)
+                const hasNotWonGame = thisGame.movePhase !== 0; 
+                if (hasNotWonGame)
                 {
+                    // Caution - this is a "gotcha" bug waiting to happen, as it happened twice already.
+                    // Don't shorten below to: battlePiece.battleOkClick(thisGame.perspectiveColor);
+                    // The battlePiece object is no longer a reference to the game piece! 
+                    // Many bothans died to bring us this information.
                     thisGame.pieces[battlePiece.index].battleOkClick(thisGame.player.team.color);
                     const reRollDelay = 1000;
                     setTimeout(function(){
-                        if (document.getElementById("Foundation_Elemental_7_overlayCommit"))
+                        if (document.getElementById("Foundation_Elemental_" + gameVersion + "_overlayCommit"))
                         {
                             roll();
                         }
                         else
                         {
-                            window.isBattleSelected = false;
-                            if (!isReserveBattle)
+                            if (isReserveBattle)
                             {
+                                // Clear the reserve interval now to prevent the Komputer from replaying a reserve battle.
+                                // Also prevents stopping the Komputer manually, until the turn is over - likely a couple seconds away. 
+                                clearInterval(window.reserveIntervalId);
+                                setTimeout(function(){
+                                    const battleReview = document.getElementById("Foundation_Elemental_" + gameVersion + "_battleOk");
+                                    if (battleReview)
+                                    {
+                                        thisGame.pieces[battlePiece.index].battleOkClick(thisGame.player.team.color);
+                                    }
+                                    window.hasBattleBegun = false;
+                                    setTimeout(function()
+                                    {
+                                        // Check for more reserve battles, which are rare, but possible.
+                                        maybeFightReserveBattle(thisGame);
+                                        if (!thisGame.hasBattlesPending && !window.hasBattleBegun)
+                                        {
+                                            endReservePhase(thisGame);
+                                        }
+                                    }, 200);
+                                }, battleReviewDelay);
+                            }
+                            else
+                            {
+                                window.hasBattleBegun = false;
                                 runKomputer(thisGame);
                             }
                         }
                     }, reRollDelay);
                 }
-                // Game won. Leave battle on screen and end.
+                // Game won. Reset for start.
                 else
                 {
                     thisGame.maxMoveNumber = 0;
@@ -1292,6 +1359,10 @@ function placeReserveUnit(thisGame){
     if (window.stopKomputer === true)
     {
         stopAndReset();
+        return;
+    }
+    if (window.hasBattleBegun)
+    {
         return;
     }
     const reserveUnits = thisGame.player.team.reserveUnits;
@@ -1362,35 +1433,46 @@ function placeReserveUnit(thisGame){
         {
            fixPiecesPendingValue(thisGame, invalidPiece)
         }
-        // Maybe recall units.
+        // Maybe recall units, fight reserve battles, or end turn.
         maybeRecallTroops(thisGame);
         maybeRecallFrigatesToPort(thisGame);
-        // Handle reserve battles. 
+        maybeFightReserveBattle(thisGame);
+        if (!thisGame.hasBattlesPending && !hasBattleBegun)
+        {
+            endReservePhase(thisGame);
+        }
+    }
+}
+
+
+function endReservePhase(thisGame)
+{
+    setTimeout(function(){
+        clearIntervalsAndTimers();
+        if (window.currentPlayerTurn === thisGame.perspectiveColor)
+        {
+            thisGame.moveToNextPlayer();
+            thisGame.sendMove();
+        }
+        window.hasBattleBegun = false;
+        window.isKomputerReady = true;
+        resetKomputerButtonStyle();
+        console.log("Done.");
+    }, 100)
+}
+
+
+function maybeFightReserveBattle(thisGame)
+{
+    if (thisGame.hasBattlesPending && !window.hasBattleBegun)
+    {
         const battlePiece = findNextBattle(thisGame);
         if (battlePiece)
         {
-            if (!window.isBattleSelected)
-            {
-                console.log("Handling reserve battle.");
-                fightBattle(thisGame, battlePiece, true);
-            }
+            console.log("Handling reserve battle.");
+            fightBattle(thisGame, battlePiece, true);
         }
-        // Prepare next player.
-        else
-        {
-            clearInterval(window.reserveIntervalId);
-            setTimeout(function(){
-                clearIntervalsAndTimers();
-                if (window.currentPlayerTurn === thisGame.perspectiveColor)
-                {
-                    thisGame.endMyTurn();
-                }
-                window.isKomputerReady = true;
-                resetKomputerButtonStyle();
-                console.log("Done.");
-            }, 200)
-        }
-    }
+    }    
 }
 
 
@@ -1894,7 +1976,7 @@ function maybeRecallTroops(thisGame)
 function getPrioritzedRecallUnits(thisGame, units)
 {
     // Avoid recall of troops near the enemy, as these may be pinned or holding a seige. 
-    orderFromFarthestToEnemy(thisGame, units);
+    orderFromFarthestToEnemy(thisGame, units, true);
     let primaryRecall = [];
     let secondaryRecall = [];
     let tertiaryRecall = [];
@@ -1948,7 +2030,7 @@ function hasThreat(thisGame, piece)
 function hasGraveDanger(thisGame, civPiece)
 {
     const weightedDangerThreshold = (civPiece.hasTown(thisGame.perspectiveColor) && !civPiece.isMountain()) ? 0 : 3;
-    return (civPiece.countMilitaryUnits(civPiece.units) === 0 && (guessThreat(thisGame, civPiece) > weightedDangerThreshold));
+    return ((civPiece.countMilitaryUnits(civPiece.units) === 0) && (guessThreat(thisGame, civPiece) > weightedDangerThreshold));
 }
 
 
@@ -1962,7 +2044,8 @@ function maybeRecallFrigatesToPort(thisGame)
             for (const frigate of frigates)
             {
                 // Skip any frigate with cargo, with a pin, or supporting a friendly civ.  
-                if (frigate.hasUnloadables() || hasAdjacentEnemyTown(thisGame, frigate.piece) || hasAdjacentFriendlyCiv(thisGame, frigate.piece)) 
+                if (frigate.hasUnloadables() || hasAdjacentEnemyTown(thisGame, frigate.piece) || 
+                (hasAdjacentFriendlyCiv(thisGame, frigate.piece) && hasThreat(thisGame, findAdjacentCivilization(thisGame, frigate.piece)))) 
                 {
                     continue;
                 }
@@ -2054,7 +2137,7 @@ function placeCapital(thisGame)
             thisGame.overlayCommitOnClick();
             setTimeout(function(){
                 // Maybe swap water hex for land.
-                const waterPopup = document.getElementById("Foundation_Elemental_7_waterSwap");
+                const waterPopup = document.getElementById("Foundation_Elemental_" + gameVersion + "_waterSwap");
                 if (waterPopup)
                 {
                     thisGame.swapWaterForLand();
@@ -2088,7 +2171,7 @@ function placeCapital(thisGame)
                             thisGame.placeReserveOnMouseUp(destinationScreenPoint)
                             thisGame.overlayCommitOnClick();
                             setTimeout(function(){
-                                const waterPopup = document.getElementById("Foundation_Elemental_7_waterSwap");
+                                const waterPopup = document.getElementById("Foundation_Elemental_" + gameVersion + "_waterSwap");
                                 if (waterPopup)
                                 {
                                     thisGame.swapWaterForLand();
@@ -3145,9 +3228,9 @@ function cacheElementsForStyling()
         document.querySelector("#Foundation_Elemental_1_tabs > tbody > tr > td:nth-child(3)").cloneNode(true),
         document.querySelector("#Foundation_Elemental_1_tabs > tbody > tr > td:nth-child(5)").cloneNode(true),
         document.querySelector("#Foundation_Elemental_1_tabs > tbody > tr > td:nth-child(7)").cloneNode(true),
-        document.getElementById("Foundation_Elemental_7_gameMessageRead").cloneNode(true),
-        document.getElementById("Foundation_Elemental_7_playerNotes").cloneNode(true),
-        document.getElementById("Foundation_Elemental_7_gameMessageWrite").cloneNode(true),
+        document.getElementById("Foundation_Elemental_" + gameVersion + "_gameMessageRead").cloneNode(true),
+        document.getElementById("Foundation_Elemental_" + gameVersion + "_playerNotes").cloneNode(true),
+        document.getElementById("Foundation_Elemental_" + gameVersion + "_gameMessageWrite").cloneNode(true),
         document.querySelector("body > div > div:nth-child(6)").cloneNode(true)
     ]
 }
@@ -3212,9 +3295,9 @@ function applyDarkMode(content, bottomDiv)
     titleSpacer1.style.border = '';
     titleSpacer2.style.border = '';
     titleSpacer3.style.border = '';
-    let gameMessageRead = document.getElementById("Foundation_Elemental_7_gameMessageRead");
-    let playerNotes = document.getElementById("Foundation_Elemental_7_playerNotes");
-    let gameMessageWrite = document.getElementById("Foundation_Elemental_7_gameMessageWrite");
+    let gameMessageRead = document.getElementById("Foundation_Elemental_" + gameVersion + "_gameMessageRead");
+    let playerNotes = document.getElementById("Foundation_Elemental_" + gameVersion + "_playerNotes");
+    let gameMessageWrite = document.getElementById("Foundation_Elemental_" + gameVersion + "_gameMessageWrite");
     gameMessageRead.style.backgroundColor = 'lightgrey';
     playerNotes.style.backgroundColor = 'lightgrey';
     gameMessageWrite.style.backgroundColor = 'lightgrey';
@@ -3235,9 +3318,9 @@ function applyLightMode(content, bottomDiv)
         document.querySelector("#Foundation_Elemental_1_tabs > tbody > tr > td:nth-child(3)"),
         document.querySelector("#Foundation_Elemental_1_tabs > tbody > tr > td:nth-child(5)"),
         document.querySelector("#Foundation_Elemental_1_tabs > tbody > tr > td:nth-child(7)"),
-        document.getElementById("Foundation_Elemental_7_gameMessageRead"),
-        document.getElementById("Foundation_Elemental_7_playerNotes"),
-        document.getElementById("Foundation_Elemental_7_gameMessageWrite"),
+        document.getElementById("Foundation_Elemental_" + gameVersion + "_gameMessageRead"),
+        document.getElementById("Foundation_Elemental_" + gameVersion + "_playerNotes"),
+        document.getElementById("Foundation_Elemental_" + gameVersion + "_gameMessageWrite"),
         bottomDiv
     ]
     for (let index = 0; index < pageElements.length; index++)
