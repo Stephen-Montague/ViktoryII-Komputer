@@ -1243,7 +1243,7 @@ function fightBattle(thisGame, battlePiece, isReserveBattle = false)
                     applyHits(thisGame, battlePiece.index, data);
                 }
             }
-            // Close battle after review time, if game not won, then reroll or continue game.
+            // Roll again or close after review, then continue game / find next battle.
             const battleReviewDelay = 1600;
             setTimeout(function(){
                 const hasNotWonGame = thisGame.movePhase !== 0; 
@@ -1264,17 +1264,25 @@ function fightBattle(thisGame, battlePiece, isReserveBattle = false)
                         {
                             if (isReserveBattle)
                             {
+                                // Clear the reserve interval now to prevent the Komputer from replaying a reserve battle.
+                                // Also prevents stopping the Komputer manually, until the turn is over - likely a couple seconds away. 
+                                clearInterval(window.reserveIntervalId);
                                 setTimeout(function(){
                                     const battleReview = document.getElementById("Foundation_Elemental_" + gameVersion + "_battleOk");
                                     if (battleReview)
                                     {
-                                        // Caution - before changing this, read the comment above.
                                         thisGame.pieces[battlePiece.index].battleOkClick(thisGame.player.team.color);
                                     }
+                                    window.hasBattleBegun = false;
                                     setTimeout(function()
                                     {
-                                        endReservePhase(thisGame);
-                                    }, 100);
+                                        // Check for more reserve battles, which are rare, but possible.
+                                        maybeFightReserveBattle(thisGame);
+                                        if (!thisGame.hasBattlesPending && !window.hasBattleBegun)
+                                        {
+                                            endReservePhase(thisGame);
+                                        }
+                                    }, 200);
                                 }, battleReviewDelay);
                             }
                             else
@@ -1425,20 +1433,11 @@ function placeReserveUnit(thisGame){
         {
            fixPiecesPendingValue(thisGame, invalidPiece)
         }
-        // Maybe recall units.
+        // Maybe recall units, fight reserve battles, or end turn.
         maybeRecallTroops(thisGame);
         maybeRecallFrigatesToPort(thisGame);
-        // Maybe fight a reserve battle. 
-        if (thisGame.hasBattlesPending && !hasBattleBegun)
-        {
-            const battlePiece = findNextBattle(thisGame);
-            if (battlePiece)
-            {
-                console.log("Handling reserve battle.");
-                fightBattle(thisGame, battlePiece, true);
-            }
-        }
-        else if (!hasBattleBegun)
+        maybeFightReserveBattle(thisGame);
+        if (!thisGame.hasBattlesPending && !hasBattleBegun)
         {
             endReservePhase(thisGame);
         }
@@ -1448,7 +1447,6 @@ function placeReserveUnit(thisGame){
 
 function endReservePhase(thisGame)
 {
-    clearInterval(window.reserveIntervalId);
     setTimeout(function(){
         clearIntervalsAndTimers();
         if (window.currentPlayerTurn === thisGame.perspectiveColor)
@@ -1461,6 +1459,20 @@ function endReservePhase(thisGame)
         resetKomputerButtonStyle();
         console.log("Done.");
     }, 100)
+}
+
+
+function maybeFightReserveBattle(thisGame)
+{
+    if (thisGame.hasBattlesPending && !window.hasBattleBegun)
+    {
+        const battlePiece = findNextBattle(thisGame);
+        if (battlePiece)
+        {
+            console.log("Handling reserve battle.");
+            fightBattle(thisGame, battlePiece, true);
+        }
+    }    
 }
 
 
