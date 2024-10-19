@@ -93,7 +93,7 @@ function resetGlobals(resetButton = false)
     window.isBombarding = false;
     window.isUnloading = false;
     window.isManeuveringToAttack = false;
-    window.isBattleSelected = false;
+    window.hasBattleBegun = false;
     window.gameVersion = GamesByEmail.findFirstGame().$Foundation_$registry_index;
     window.currentPlayerTurn = Foundation.$registry[gameVersion].perspectiveColor;
     window.isKomputerReady = false;
@@ -275,8 +275,8 @@ function findFrigates(thisGame, color)
     let frigates = [];
     for (const piece of thisGame.pieces)
     {
-        // Skip reserve units
-        if (piece.valueIndex === - 1)
+        // Skip reserves and any battle.
+        if (piece.valueIndex === - 1 || piece.hasBattle(thisGame.perspectiveColor, -1))
         {
             continue;
         }
@@ -369,8 +369,8 @@ async function moveEachUnit(thisGame, movableUnits, intervalPeriod)
                         const destinationScreenPoint = thisGame.pieces[pieceIndex].$screenRect.getCenter();
                         moveUnitSimulateMouseUp(thisGame, destinationScreenPoint);
                         // Commit to explore after some processing time.
-                        const normalPopup = document.getElementById("Foundation_Elemental_7_overlayCommit");
-                        if (normalPopup || document.getElementById("Foundation_Elemental_7_customizeMapDoAll"))
+                        const normalPopup = document.getElementById("Foundation_Elemental_" + gameVersion + "_overlayCommit");
+                        if (normalPopup || document.getElementById("Foundation_Elemental_" + gameVersion + "_customizeMapDoAll"))
                         {
                             window.isExploring = true;
                             if (normalPopup)
@@ -473,7 +473,7 @@ function isNotValidUnit(thisGame, unit)
 
 function settleExploredTerrain(thisGame, unit)
 {
-    const waterPopup = document.getElementById("Foundation_Elemental_7_waterSwap");
+    const waterPopup = document.getElementById("Foundation_Elemental_" + gameVersion + "_waterSwap");
     if (waterPopup)
     {
         thisGame.swapWaterForLand();
@@ -943,14 +943,14 @@ function maybeAddImaginaryCargo(frigate, hasCargo)
 {
     if (!hasCargo)
     {
-        frigate.cargo = "imaginary";
+        frigate.cargo = "romulanAle";
     }
 }
 
 
 function removeImaginaryCargo(frigate)
 {
-    if (frigate.cargo === "imaginary")
+    if (frigate.cargo === "romulanAle")
     {
         frigate.cargo = "";
     }
@@ -1207,29 +1207,30 @@ function findNextBattle(thisGame)
 
 function fightBattle(thisGame, battlePiece, isReserveBattle = false)
 {
-    // Clear any exploration popup
-    const explorationPopup = document.getElementById("Foundation_Elemental_7_overlayCommit");
-    if (explorationPopup)
+    // Clear any exploration popup.
+    const explorationPopup = document.getElementById("Foundation_Elemental_" + gameVersion + "_overlayCommit");
+    const endTurnCommit = document.getElementById("Foundation_Elemental_" + gameVersion + "_endMyTurn");
+    if (explorationPopup && !endTurnCommit)
     {
         thisGame.overlayCommitOnClick();
     }
-    // Select battle
-    if (!window.isBattleSelected)
+    // Select battle.
+    if (!window.hasBattleBegun)
     {
+        window.hasBattleBegun = true;
         thisGame.moveUnitsMouseDown(battlePiece.$screenRect.getCenter());
-        window.isBattleSelected = true;
     }
-    // Do prebattle artillery
-    if (document.getElementById("Foundation_Elemental_7_battleOk"))
+    // Do prebattle artillery.
+    if (document.getElementById("Foundation_Elemental_" + gameVersion + "_battleOk"))
     {
         battlePiece.preBattleOkClick(thisGame.player.team.color);
     }
     // Roll loop
-    const rollDelay = 200;
+    const rollDelay = 400;
     setTimeout(function roll(){
         thisGame.overlayCommitOnClick();
         // Apply hits.
-        const applyHitsDelay = 200;
+        const applyHitsDelay = 400;
         setTimeout(function(){
             if (thisGame.battleData)
             {
@@ -1245,26 +1246,46 @@ function fightBattle(thisGame, battlePiece, isReserveBattle = false)
             // Close battle after review time, if game not won, then reroll or continue game.
             const battleReviewDelay = 1600;
             setTimeout(function(){
-                if (thisGame.movePhase !== 0)
+                const hasNotWonGame = thisGame.movePhase !== 0; 
+                if (hasNotWonGame)
                 {
+                    // Caution - this is a "gotcha" bug waiting to happen, as it happened twice already.
+                    // Don't shorten below to: battlePiece.battleOkClick(thisGame.perspectiveColor);
+                    // The battlePiece object is no longer a reference to the game piece! 
+                    // Many bothans died to bring us this information.
                     thisGame.pieces[battlePiece.index].battleOkClick(thisGame.player.team.color);
                     const reRollDelay = 1000;
                     setTimeout(function(){
-                        if (document.getElementById("Foundation_Elemental_7_overlayCommit"))
+                        if (document.getElementById("Foundation_Elemental_" + gameVersion + "_overlayCommit"))
                         {
                             roll();
                         }
                         else
                         {
-                            window.isBattleSelected = false;
-                            if (!isReserveBattle)
+                            if (isReserveBattle)
                             {
+                                setTimeout(function(){
+                                    const battleReview = document.getElementById("Foundation_Elemental_" + gameVersion + "_battleOk");
+                                    if (battleReview)
+                                    {
+                                        // Caution - before changing this, read the comment above.
+                                        thisGame.pieces[battlePiece.index].battleOkClick(thisGame.player.team.color);
+                                    }
+                                    setTimeout(function()
+                                    {
+                                        endReservePhase(thisGame);
+                                    }, 100);
+                                }, battleReviewDelay);
+                            }
+                            else
+                            {
+                                window.hasBattleBegun = false;
                                 runKomputer(thisGame);
                             }
                         }
                     }, reRollDelay);
                 }
-                // Game won. Leave battle on screen and end.
+                // Game won. Reset for start.
                 else
                 {
                     thisGame.maxMoveNumber = 0;
@@ -1330,6 +1351,10 @@ function placeReserveUnit(thisGame){
     if (window.stopKomputer === true)
     {
         stopAndReset();
+        return;
+    }
+    if (window.hasBattleBegun)
+    {
         return;
     }
     const reserveUnits = thisGame.player.team.reserveUnits;
@@ -1401,37 +1426,41 @@ function placeReserveUnit(thisGame){
            fixPiecesPendingValue(thisGame, invalidPiece)
         }
         // Maybe recall units.
-        if (!thisGame.hasBattlesPending)
+        maybeRecallTroops(thisGame);
+        maybeRecallFrigatesToPort(thisGame);
+        // Maybe fight a reserve battle. 
+        if (thisGame.hasBattlesPending && !hasBattleBegun)
         {
-            maybeRecallTroops(thisGame);
-            maybeRecallFrigatesToPort(thisGame);
-        }
-        // Handle reserve battles. 
-        const battlePiece = findNextBattle(thisGame);
-        if (battlePiece)
-        {
-            if (!window.isBattleSelected)
+            const battlePiece = findNextBattle(thisGame);
+            if (battlePiece)
             {
                 console.log("Handling reserve battle.");
                 fightBattle(thisGame, battlePiece, true);
             }
         }
-        // Prepare next player.
-        else
+        else if (!hasBattleBegun)
         {
-            clearInterval(window.reserveIntervalId);
-            setTimeout(function(){
-                clearIntervalsAndTimers();
-                if (window.currentPlayerTurn === thisGame.perspectiveColor)
-                {
-                    thisGame.endMyTurn();
-                }
-                window.isKomputerReady = true;
-                resetKomputerButtonStyle();
-                console.log("Done.");
-            }, 200)
+            endReservePhase(thisGame);
         }
     }
+}
+
+
+function endReservePhase(thisGame)
+{
+    clearInterval(window.reserveIntervalId);
+    setTimeout(function(){
+        clearIntervalsAndTimers();
+        if (window.currentPlayerTurn === thisGame.perspectiveColor)
+        {
+            thisGame.moveToNextPlayer();
+            thisGame.sendMove();
+        }
+        window.hasBattleBegun = false;
+        window.isKomputerReady = true;
+        resetKomputerButtonStyle();
+        console.log("Done.");
+    }, 100)
 }
 
 
@@ -2096,7 +2125,7 @@ function placeCapital(thisGame)
             thisGame.overlayCommitOnClick();
             setTimeout(function(){
                 // Maybe swap water hex for land.
-                const waterPopup = document.getElementById("Foundation_Elemental_7_waterSwap");
+                const waterPopup = document.getElementById("Foundation_Elemental_" + gameVersion + "_waterSwap");
                 if (waterPopup)
                 {
                     thisGame.swapWaterForLand();
@@ -2130,7 +2159,7 @@ function placeCapital(thisGame)
                             thisGame.placeReserveOnMouseUp(destinationScreenPoint)
                             thisGame.overlayCommitOnClick();
                             setTimeout(function(){
-                                const waterPopup = document.getElementById("Foundation_Elemental_7_waterSwap");
+                                const waterPopup = document.getElementById("Foundation_Elemental_" + gameVersion + "_waterSwap");
                                 if (waterPopup)
                                 {
                                     thisGame.swapWaterForLand();
@@ -3187,9 +3216,9 @@ function cacheElementsForStyling()
         document.querySelector("#Foundation_Elemental_1_tabs > tbody > tr > td:nth-child(3)").cloneNode(true),
         document.querySelector("#Foundation_Elemental_1_tabs > tbody > tr > td:nth-child(5)").cloneNode(true),
         document.querySelector("#Foundation_Elemental_1_tabs > tbody > tr > td:nth-child(7)").cloneNode(true),
-        document.getElementById("Foundation_Elemental_7_gameMessageRead").cloneNode(true),
-        document.getElementById("Foundation_Elemental_7_playerNotes").cloneNode(true),
-        document.getElementById("Foundation_Elemental_7_gameMessageWrite").cloneNode(true),
+        document.getElementById("Foundation_Elemental_" + gameVersion + "_gameMessageRead").cloneNode(true),
+        document.getElementById("Foundation_Elemental_" + gameVersion + "_playerNotes").cloneNode(true),
+        document.getElementById("Foundation_Elemental_" + gameVersion + "_gameMessageWrite").cloneNode(true),
         document.querySelector("body > div > div:nth-child(6)").cloneNode(true)
     ]
 }
@@ -3254,9 +3283,9 @@ function applyDarkMode(content, bottomDiv)
     titleSpacer1.style.border = '';
     titleSpacer2.style.border = '';
     titleSpacer3.style.border = '';
-    let gameMessageRead = document.getElementById("Foundation_Elemental_7_gameMessageRead");
-    let playerNotes = document.getElementById("Foundation_Elemental_7_playerNotes");
-    let gameMessageWrite = document.getElementById("Foundation_Elemental_7_gameMessageWrite");
+    let gameMessageRead = document.getElementById("Foundation_Elemental_" + gameVersion + "_gameMessageRead");
+    let playerNotes = document.getElementById("Foundation_Elemental_" + gameVersion + "_playerNotes");
+    let gameMessageWrite = document.getElementById("Foundation_Elemental_" + gameVersion + "_gameMessageWrite");
     gameMessageRead.style.backgroundColor = 'lightgrey';
     playerNotes.style.backgroundColor = 'lightgrey';
     gameMessageWrite.style.backgroundColor = 'lightgrey';
@@ -3277,9 +3306,9 @@ function applyLightMode(content, bottomDiv)
         document.querySelector("#Foundation_Elemental_1_tabs > tbody > tr > td:nth-child(3)"),
         document.querySelector("#Foundation_Elemental_1_tabs > tbody > tr > td:nth-child(5)"),
         document.querySelector("#Foundation_Elemental_1_tabs > tbody > tr > td:nth-child(7)"),
-        document.getElementById("Foundation_Elemental_7_gameMessageRead"),
-        document.getElementById("Foundation_Elemental_7_playerNotes"),
-        document.getElementById("Foundation_Elemental_7_gameMessageWrite"),
+        document.getElementById("Foundation_Elemental_" + gameVersion + "_gameMessageRead"),
+        document.getElementById("Foundation_Elemental_" + gameVersion + "_playerNotes"),
+        document.getElementById("Foundation_Elemental_" + gameVersion + "_gameMessageWrite"),
         bottomDiv
     ]
     for (let index = 0; index < pageElements.length; index++)
