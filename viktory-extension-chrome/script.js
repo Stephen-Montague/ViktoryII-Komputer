@@ -32,6 +32,7 @@ function setupExtension()
     if (isGameReady(thisGame))
     {
         addTouchSupport();
+        addBoardBuilder();
         patchPiecePrototype();
         patchUnitPrototype();
         if (!document.getElementById("KomputerButton"))
@@ -67,6 +68,7 @@ function runKomputerClick(thisGame)
     if (window.isKomputerReady)
     {
         resetGlobals();
+        disableBoardBuilder();
         styleButtonForRun();
         runKomputer(thisGame);
     }
@@ -1207,13 +1209,7 @@ function findNextBattle(thisGame)
 
 function fightBattle(thisGame, battlePiece, isReserveBattle = false)
 {
-    // Clear any exploration popup.
-    const explorationPopup = document.getElementById("Foundation_Elemental_" + gameVersion + "_overlayCommit");
-    const endTurnCommit = document.getElementById("Foundation_Elemental_" + gameVersion + "_endMyTurn");
-    if (explorationPopup && !endTurnCommit)
-    {
-        thisGame.overlayCommitOnClick();
-    }
+    commitExploration(thisGame);
     // Select battle.
     if (!window.hasBattleBegun)
     {
@@ -1304,7 +1300,17 @@ function fightBattle(thisGame, battlePiece, isReserveBattle = false)
             }, battleReviewDelay);
         }, applyHitsDelay);
     }, rollDelay);
+}
 
+
+function commitExploration(thisGame)
+{
+    const explorationPopup = document.getElementById("Foundation_Elemental_" + gameVersion + "_overlayCommit");
+    const endTurnCommit = document.getElementById("Foundation_Elemental_" + gameVersion + "_endMyTurn");
+    if (explorationPopup && !endTurnCommit)
+    {
+        thisGame.overlayCommitOnClick();
+    }
 }
 
 
@@ -1914,6 +1920,27 @@ function fixPiecesPendingValue(thisGame, piecePendingValue)
 }
 
 
+function setPiecesPendingValue(thisGame, boardValue)
+{
+    let piecePendingValue = thisGame.pieces.findByBoardValue("l");
+    if (piecePendingValue)
+    {        
+        let logData = new Array();
+        while (piecePendingValue) {
+            const landHexValue = boardValue;
+            piecePendingValue.setValue(landHexValue);
+            thisGame.maybeUndarkPiece(piecePendingValue);
+            logData.push(piecePendingValue.index);
+            logData.push(landHexValue);
+            piecePendingValue = thisGame.pieces.findByBoardValue("l");
+        }
+        thisGame.clearMapCustomizationData();
+        thisGame.pushMapCustomizationMove(piecePendingValue, logData, logData.length);
+        thisGame.update();
+    }
+}
+
+
 // Original codebase function modified to get any terrain type, including water.
 function getRandomAvailableHexValue(thisGame)
 {
@@ -2108,8 +2135,19 @@ function placeCapital(thisGame)
     // Maybe reset game move count, in the case a previous game was played.
     thisGame.maxMoveNumber = thisGame.maxMoveNumber < 6 ? thisGame.maxMoveNumber : 0;
     const isFirstMove = (thisGame.maxMoveNumber < 2);
-    let pieceIndexChoices = isFirstMove ? [7, 9, 24] : [36, 51, 53];
-    let pieceIndex = isFirstMove ? getFirstCapitalPieceIndex(pieceIndexChoices) : getSecondCapitalPieceIndex(thisGame, pieceIndexChoices);
+    let pieceIndexStandardChoices = isFirstMove ? [7, 9, 24] : [36, 51, 53];
+    let pieceIndex = isFirstMove ? getFirstCapitalPieceIndex(thisGame, pieceIndexStandardChoices) : getSecondCapitalPieceIndex(thisGame, pieceIndexStandardChoices);
+    if (!pieceIndex)
+    {
+        pieceIndex = findRandomTargetPieceIndex(thisGame);
+        if (!pieceIndex)
+        {
+            window.isKomputerReady = true;
+            resetKomputerButtonStyle();
+            console.log("Terrain not playable.");
+            return;
+        }        
+    }
     let destinationScreenPoint = thisGame.pieces[pieceIndex].$screenRect.getCenter();
     
     // Explore 5 initial hexes, handle water.
@@ -2130,11 +2168,10 @@ function placeCapital(thisGame)
         const shortDelay = 400;
         const longDelay = 700;
         setTimeout(function(){
-            thisGame.customizeMapDoAll(true);
-        
+            thisGame.customizeMapDoAll(true);        
             // Place capital & commit. 
             thisGame.placeCapitalMouseDown(destinationScreenPoint);
-            thisGame.overlayCommitOnClick();
+            commitExploration(thisGame);
             setTimeout(function(){
                 // Maybe swap water hex for land.
                 const waterPopup = document.getElementById("Foundation_Elemental_" + gameVersion + "_waterSwap");
@@ -2165,11 +2202,24 @@ function placeCapital(thisGame)
                         if (thisGame.movePhase === 11)
                         {
                             let element = document.querySelector("#Foundation_Elemental_" + gameVersion + "_reserve_0");
-                            thisGame.reserveOnMouseDown(element, thisGame.event("reserveOnMouseDown(this,event,#)"), 0);
-                            pieceIndex = (pieceIndex < 51) ? pieceIndexChoices[0] : (pieceIndex > 51) ? pieceIndexChoices[1]: getRandomItem(pieceIndexChoices);
+                            thisGame.reserveOnMouseDown(null, thisGame.event("reserveOnMouseDown(this,event,#)"), 0);
+                            if (pieceIndexStandardChoices.includes(pieceIndex))
+                            {
+                                pieceIndex = (pieceIndex < 51) ? pieceIndexStandardChoices[0] : (pieceIndex > 51) ? pieceIndexStandardChoices[1]: getRandomItem(pieceIndexStandardChoices);
+                            }
+                            else
+                            {
+                                pieceIndex = findRandomTargetPieceIndex(thisGame);
+                                if (!pieceIndex)
+                                {
+                                    window.isKomputerReady = true;
+                                    resetKomputerButtonStyle();
+                                    console.log("Done.");
+                                }
+                            }
                             destinationScreenPoint = thisGame.pieces[pieceIndex].$screenRect.getCenter();
-                            thisGame.placeReserveOnMouseUp(destinationScreenPoint)
-                            thisGame.overlayCommitOnClick();
+                            thisGame.placeReserveOnMouseUp(destinationScreenPoint);
+                            commitExploration(thisGame);
                             setTimeout(function(){
                                 const waterPopup = document.getElementById("Foundation_Elemental_" + gameVersion + "_waterSwap");
                                 if (waterPopup)
@@ -2198,6 +2248,41 @@ function placeCapital(thisGame)
 }
 
 
+function hasInvalidCapitalHexes(thisGame, pieceIndexChoices)
+{
+    if (thisGame.playOptions.mapCustomizationData.length)
+    {
+        return false;
+    }
+    for (const pieceIndex of pieceIndexChoices)
+    {
+        if (thisGame.isTargetPoint(thisGame.pieces[pieceIndex].boardPoint))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+
+function findRandomTargetPieceIndex(thisGame)
+{
+    if (thisGame.targetPoints.length > 0)
+    {
+        validPieceIndices = [];
+        for (const piece of thisGame.pieces)
+        {
+            if (thisGame.isTargetPoint(piece.boardPoint))
+            {
+                validPieceIndices.push(piece.index);
+            }
+        }
+        return getRandomItem(validPieceIndices);
+    }
+    return null;
+}
+
+
 function terrainCount(stringHexData, terrainType)
 {
       let count = 0;
@@ -2212,8 +2297,12 @@ function terrainCount(stringHexData, terrainType)
 }
 
 
-function getFirstCapitalPieceIndex(pieceIndexChoices)
+function getFirstCapitalPieceIndex(thisGame, pieceIndexChoices)
 {
+    if (hasInvalidCapitalHexes(thisGame, pieceIndexChoices))
+    {
+        return null;
+    }
     const randomMoveChance = 0.03125;  // Yields less than 2% chance of playing center.
     if (Math.random() < randomMoveChance)
     {
@@ -2235,15 +2324,19 @@ function getFirstCapitalPieceIndex(pieceIndexChoices)
 
 function getSecondCapitalPieceIndex(thisGame, pieceIndexChoices)
 {
+    if (hasInvalidCapitalHexes(thisGame, pieceIndexChoices))
+    {
+        return null;
+    }
     const enemyColor = !thisGame.perspectiveColor * 1;
     // Take the opposite side of the enemy, or if center, play random.
     if (thisGame.pieces[9].hasUnit(enemyColor, "C"))
     {
         return pieceIndexChoices.splice(getRandomIndexExclusive(pieceIndexChoices.length), 1);
     }
-    else
+    const enemyCapitalPiece = thisGame.pieces.findCapitalPiece(enemyColor);
+    if (enemyCapitalPiece)
     {
-        const enemyCapitalPiece = thisGame.pieces.findCapitalPiece(enemyColor);
         if (enemyCapitalPiece.index < 9)
         {
             return pieceIndexChoices.pop();
@@ -2253,6 +2346,7 @@ function getSecondCapitalPieceIndex(thisGame, pieceIndexChoices)
             return pieceIndexChoices.shift();
         }
     }
+    return null;
 }
 
 
@@ -3277,6 +3371,7 @@ function applyDarkMode(content, bottomDiv)
 {
     document.body.style.backgroundColor = 'dimgrey';
     content.style.backgroundColor = 'slategrey';
+    window.cacheContentBackgroundColor = content.style.backgroundColor;
     content.style.border = '';
     let title_0 = document.getElementById("Foundation_Elemental_1_title_0");
     let title_1 = document.getElementById("Foundation_Elemental_1_title_1");
@@ -3330,6 +3425,7 @@ function applyLightMode(content, bottomDiv)
             pageElements[index].style[property] = window.cache[index].style[property];
         }
     }
+    window.cacheContentBackgroundColor = content.style.backgroundColor;
 }
 
 
@@ -3529,5 +3625,304 @@ function getTouchHitBox()
             "bottom" : pageBottom	
         }
     )
+}
+
+/// === Board Builder
+
+function addBoardBuilder()
+{
+    const boardBuilderDiv = document.createElement('div');
+    boardBuilderDiv.style.display = 'flex';
+    boardBuilderDiv.style.flexDirection = 'column';
+    boardBuilderDiv.style.position = "absolute";
+    boardBuilderDiv.style.top = getBoardBuilderTop();
+    boardBuilderDiv.style.left = getBoardBuilderLeft();
+    boardBuilderDiv.style.fontSize = "10px";
+    boardBuilderDiv.style.fontFamily = "Verdana";
+    boardBuilderDiv.innerText = "Board Builder";
+    document.body.appendChild(boardBuilderDiv);
+
+    window.isTerrainSelected = {};
+    const inputOptions = [
+        {value: 'Plains'},
+        {value: 'Grass'},
+        {value: 'Forest'},
+        {value: 'Mountain'},
+        {value: 'Water'}
+    ];
+    inputOptions.forEach(option => {
+        window.isTerrainSelected[option.value] = false;
+        const radioButtons = createRadioButton(option.value);
+        boardBuilderDiv.appendChild(radioButtons);
+    });
+    addBoardBuilderToggle();
+}
+
+
+function createRadioButton(value, groupName = 'RadioGroup') {
+    const container = document.createElement('div');
+    container.style.display = 'flex';
+    container.style.alignItems = 'center';
+    container.style.marginBottom = '2px';
+    const radioButton = document.createElement('input');
+    radioButton.type = 'radio';
+    radioButton.name = groupName;
+    radioButton.value = value;
+    radioButton.id = groupName + value; 
+    radioButton.style.marginRight = '6px';
+    addTerrainInputListener(radioButton);
+    const label = document.createElement('label');
+    label.innerText = value;
+    label.htmlFor = radioButton.id; 
+    label.style.fontSize = "10px";
+    label.style.fontFamily = "Verdana";
+    container.appendChild(radioButton);
+    container.appendChild(label);
+    return container;
+}
+
+
+function addTerrainInputListener(radioButton)
+{
+    radioButton.addEventListener('change', () => 
+        {
+            Object.keys(window.isTerrainSelected).forEach(key => { isTerrainSelected[key] = false; });
+            isTerrainSelected[radioButton.value] = true;
+            radioButton.checked = isTerrainSelected[radioButton.value] ? true : false; 
+            console.log("Pressed: " + radioButton.value);
+            enableBoardBuilder();
+        }
+    )
+}
+
+
+function getBoardBuilderTop()
+{
+    const playNotesOffset = 129;
+    return (window.scrollY + document.getElementById('Foundation_Elemental_' + gameVersion + '_playerNotes').getBoundingClientRect().bottom + playNotesOffset + 'px');
+}
+
+
+function getBoardBuilderLeft()
+{
+    const playerNotesOffset = 28;
+    return (window.scrollX + document.getElementById('Foundation_Elemental_' + gameVersion + '_playerNotes').getBoundingClientRect().left + playerNotesOffset + 'px');
+}
+
+
+function addBoardBuilderToggle()
+{
+    let toggle = document.createElement("input");
+    toggle.setAttribute("type", "checkbox");
+    toggle.id = "BoardBuilderToggle";
+    toggle.addEventListener('click', boardBuilderToggleMouseClick);
+	let style = {position: 'absolute', top: getBoardBuilderToggleTop(), left:getBoardBuilderToggleLeft(), 'z-index': '9999'};
+	toggleStyle = toggle.style;
+	Object.keys(style).forEach(key => toggleStyle[key] = style[key]);
+    document.body.appendChild(toggle);
+    // Toggle Label
+    let toggleLabel = document.createElement("label");
+    toggleLabel.htmlFor = "BoardBuilderToggle";
+    toggleLabel.innerText = "On";
+    style = {position: 'absolute', top: getBoardBuilderToggleLabelTop(), left: getBoardBuilderToggleLabelLeft(), 'z-index': '9999', 'font-size': '8px'};
+    Object.keys(style).forEach(key => toggleLabel.style[key] = style[key]);
+    document.body.appendChild(toggleLabel);
+}
+
+
+function getBoardBuilderToggleTop()
+{
+    const boardBuilderTop = 129;
+    const toggleOffset = -2;
+    return (window.scrollY + document.getElementById('Foundation_Elemental_' + gameVersion + '_playerNotes').getBoundingClientRect().bottom + boardBuilderTop + toggleOffset + 'px');
+}
+
+
+function getBoardBuilderToggleLeft()
+{
+    const boardBuilderLeft = 28;
+    const toggleOffset = 72;
+    return (window.scrollX + document.getElementById('Foundation_Elemental_' + gameVersion + '_playerNotes').getBoundingClientRect().left + boardBuilderLeft + toggleOffset + 'px');
+}
+
+
+function getBoardBuilderToggleLabelTop()
+{
+    const boardBuilderTop = 122;
+    const toggleOffset = 62;
+    return (window.scrollY + document.getElementById('Foundation_Elemental_' + gameVersion + '_playerNotes').getBoundingClientRect().top + boardBuilderTop + toggleOffset + 'px');
+}
+
+
+function getBoardBuilderToggleLabelLeft()
+{
+    const boardBuilderLeft = 28;
+    const toggleOffset = 92;
+    return (window.scrollX + document.getElementById('Foundation_Elemental_' + gameVersion + '_playerNotes').getBoundingClientRect().left + boardBuilderLeft + toggleOffset + 'px');
+
+}
+
+
+function boardBuilderToggleMouseClick(event, toggle)
+{
+    toggle = event ? event.currentTarget : toggle;
+    const thisGame = Foundation.$registry[gameVersion];
+    if (toggle.checked)
+    {
+        stopAndReset();
+        window.cacheMovePhase = thisGame.movePhase;
+        thisGame.movePhase = -1;
+        thisGame.update();
+        document.addEventListener('mousedown', boardBuilderMouseDown);
+        document.addEventListener('mousemove', boardBuilderMouseMove);
+        document.addEventListener('mouseup', boardBuilderMouseUp);
+        console.log("Board Builder: On");
+        thisGame.maybeHideOverlay();
+        thisGame.playOptions.mapCustomizationData = "";
+        setPiecesPendingValue(thisGame, "p");
+        maybeSelectRadioButton();
+        setTimeout(function(){}, 1)
+        {
+            const title = document.getElementById("Foundation_Elemental_7_gameState");            
+            title.innerText = "Board Builder";
+            title.style.backgroundColor = "darkseagreen"
+            const content = document.getElementById("Foundation_Elemental_1_content");
+            window.cacheContentBackgroundColor = content.style.backgroundColor;
+            content.style.backgroundColor = "seagreen";
+            content.style.cursor = "cell";
+            for (const piece of thisGame.pieces)
+            {
+                if (thisGame.isTargetPoint(piece.boardPoint))
+                {
+                    piece.setBorder(false);  
+                }
+            } 
+            const prompt = document.getElementById("Foundation_Elemental_7_gamePrompts");
+            prompt.innerText = "Game is paused. Customize terrain on any hex, then switch off the Board Builder to resume play.";
+        }
+    }
+    else
+    {
+        thisGame.movePhase = window.cacheMovePhase;
+        const content = document.getElementById("Foundation_Elemental_1_content");
+        content.style.backgroundColor = window.cacheContentBackgroundColor;
+        content.style.cursor = "auto";
+        const title = document.getElementById("Foundation_Elemental_7_gameState");  
+        title.style.backgroundColor = "";
+        document.removeEventListener('mousedown', boardBuilderMouseDown);
+        document.removeEventListener('mousemove', boardBuilderMouseMove);
+        document.removeEventListener('mouseup', boardBuilderMouseUp);
+        console.log("Board Builder: Off");
+        thisGame.update();
+        thisGame.removeExcessPieces(0, true);
+        thisGame.removeExcessPieces(1, true);
+    }
+}
+
+
+function boardBuilderMouseDown(event)
+{
+    if (isBoardBuilderDisabled())
+    {
+        return; 
+    }
+    maybeSelectRadioButton();
+    // Todo: fix magic numbers to board location
+    const xOffset = 20;  // document.getElementById("Foundation_Elemental_" + gameVersion + "_pieces").getBoundingClientRect().left;
+    const yOffset = 300;  // document.getElementById("Foundation_Elemental_" + gameVersion + "_pieces").getBoundingClientRect().top;
+    const screenPoint = new Foundation.Point(event.pageX - xOffset, event.pageY - yOffset); 
+    const thisGame = Foundation.$registry[gameVersion];
+    boardPoint = thisGame.boardPointFromScreenPoint(screenPoint);   
+    piece = thisGame.pieces.findAtPoint(boardPoint);
+    const reserveIndex = thisGame.pieces.length - 1;
+    const isValidHex = (piece.index !== reserveIndex && !piece.isPerimeter());
+    if (piece && isValidHex)
+    {
+        const newLand = "l";
+        const boardValues = {
+            "Plains" : "p",
+            "Grass" : "g",
+            "Forest" : "f",
+            "Mountain" : "m",
+            "Water" : "w"
+        } 
+        for (key in window.isTerrainSelected)
+        {
+            if (isTerrainSelected[key])
+            {
+                piece.boardValue = newLand;
+                piece.setValue(boardValues[key], false);
+                let hidden = false;
+                piece.setVisibility(hidden);
+                const visible = 2;
+                let boardVisArray = thisGame.boardVisibility.split("");
+                boardVisArray[piece.index] = visible;
+                thisGame.boardVisibility = boardVisArray.join("");
+            }        
+        }
+    }
+    window.isMouseDown = true;
+}
+
+
+function maybeSelectRadioButton()
+{
+    for (const terrain in window.isTerrainSelected)
+    {
+        if (window.isTerrainSelected[terrain] === true)
+        {
+            return;
+        }
+    }        
+    let radioButton = document.getElementById("RadioGroupPlains");
+    if (radioButton)
+    {
+        radioButton.checked = true;
+        window.isTerrainSelected.Plains = true;
+    }
+}
+
+
+function boardBuilderMouseMove(event)
+{
+    if (window.isMouseDown)
+    {
+        boardBuilderMouseDown(event);
+    }
+}
+
+
+function boardBuilderMouseUp(event)
+{
+    window.isMouseDown = false;
+}
+
+
+function disableBoardBuilder()
+{
+    const toggle = document.getElementById("BoardBuilderToggle");
+    if (toggle && toggle.checked)
+    {
+        toggle.checked = false;
+        boardBuilderToggleMouseClick(null, toggle);
+    }
+}
+
+
+function isBoardBuilderDisabled()
+{
+    const toggle = document.getElementById("BoardBuilderToggle");
+    return (!toggle || !toggle.checked) ? true : false;
+}
+
+
+function enableBoardBuilder()
+{
+    const toggle = document.getElementById("BoardBuilderToggle");
+    if (toggle && !toggle.checked)
+    {
+        toggle.checked = true;
+        boardBuilderToggleMouseClick(null, toggle);
+    }
 }
 

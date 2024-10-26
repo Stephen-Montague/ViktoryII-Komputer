@@ -6,7 +6,7 @@ chrome.action.onClicked.addListener(tab =>
     }
 );
 
-chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => 
+chrome.tabs.onUpdated.addListener((tabId, _changeInfo, tab) => 
     {
         if (tab.url.includes("http://gamesbyemail.com/Games/Viktory2")) 
         { 
