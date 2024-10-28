@@ -969,7 +969,7 @@ function guessArmyThreat(thisGame, piece, enemyColor)
     }
     for (const unit of enemyArmyUnits)
     {
-        let inRangePoints = unit.getMovables();
+        let inRangePoints = guessInRangePoints(thisGame, unit);
         if (!inRangePoints)
         {
             continue;
@@ -999,6 +999,41 @@ function guessArmyThreat(thisGame, piece, enemyColor)
         }
     }
     return threat;
+}
+
+
+function guessInRangePoints(thisGame, unit)
+{
+    let isWorldExplored = true; 
+    for (const piece of thisGame.pieces)
+    {
+        const reserveIndex = thisGame.pieces.length - 1;
+        if (piece.index === reserveIndex)
+        {
+            continue;
+        }
+        if (piece.hidden === true)
+        {
+            isWorldExplored = false;
+            break;
+        }
+    }
+    if (isWorldExplored)
+    {
+        return unit.getMovables();
+    }
+    // Modify "getMovables" helper function to include any visible piece in range.
+    // Allows threat assessment to include threats adjacent to unexplored terrain.
+    const stash = GamesByEmail.Viktory2Piece.prototype.allAdjacentsVisible;
+    GamesByEmail.Viktory2Piece.prototype.allAdjacentsVisible = function ()
+    {
+        // Only check if the current piece is visible.
+        return (this.hidden === false);
+    }   
+    let inRangePoints = unit.getMovables();
+    // Restore original function.
+    GamesByEmail.Viktory2Piece.prototype.allAdjacentsVisible = stash;
+    return inRangePoints;
 }
 
 
@@ -3439,7 +3474,9 @@ function touchHandler(event)
         return;
     }
     let firstTouch = event.changedTouches[0];
-    const screenPoint = new Foundation.Point(firstTouch.pageX, firstTouch.pageY - 325);
+    const xOffset = document.getElementById("Foundation_Elemental_" + gameVersion + "_pieces").getBoundingClientRect().left + window.scrollX;
+    const yOffset = document.getElementById("Foundation_Elemental_" + gameVersion + "_pieces").getBoundingClientRect().top + window.scrollY; 
+    const screenPoint = new Foundation.Point(firstTouch.pageX - xOffset, firstTouch.pageY - yOffset);
     if (isInsideHitBox(firstTouch))
     {
         event.preventDefault();
@@ -3827,16 +3864,15 @@ function boardBuilderMouseDown(event)
         return; 
     }
     maybeSelectRadioButton();
-    // Todo: fix magic numbers to board location
-    const xOffset = 20;  // document.getElementById("Foundation_Elemental_" + gameVersion + "_pieces").getBoundingClientRect().left;
-    const yOffset = 300;  // document.getElementById("Foundation_Elemental_" + gameVersion + "_pieces").getBoundingClientRect().top;
+    const xOffset = document.getElementById("Foundation_Elemental_" + gameVersion + "_pieces").getBoundingClientRect().left + window.scrollX; // 20
+    const yOffset = document.getElementById("Foundation_Elemental_" + gameVersion + "_pieces").getBoundingClientRect().top + window.scrollY; // 300
     const screenPoint = new Foundation.Point(event.pageX - xOffset, event.pageY - yOffset); 
     const thisGame = Foundation.$registry[gameVersion];
     boardPoint = thisGame.boardPointFromScreenPoint(screenPoint);   
     piece = thisGame.pieces.findAtPoint(boardPoint);
     const reserveIndex = thisGame.pieces.length - 1;
-    const isValidHex = (piece.index !== reserveIndex && !piece.isPerimeter());
-    if (piece && isValidHex)
+    const isValidHex = (piece && (piece.index !== reserveIndex) && !piece.isPerimeter());
+    if (isValidHex)
     {
         const newLand = "l";
         const boardValues = {
@@ -3852,8 +3888,8 @@ function boardBuilderMouseDown(event)
             {
                 piece.boardValue = newLand;
                 piece.setValue(boardValues[key], false);
-                let hidden = false;
-                piece.setVisibility(hidden);
+                piece.hidden = false;
+                piece.setVisibility(piece.hidden); 
                 const visible = 2;
                 let boardVisArray = thisGame.boardVisibility.split("");
                 boardVisArray[piece.index] = visible;
