@@ -28,30 +28,64 @@ function setupExtension()
 {
     // Alias the game, add controls, patch
     const thisGame = GamesByEmail.findFirstGame(); 
-    window.gameVersion = thisGame ? thisGame.$Foundation_$registry_index : null;
+    verifyElementalIds(thisGame); 
     if (isGameReady(thisGame))
     {
         addTouchSupport();
-        addBoardBuilder();
         patchPiecePrototype();
         patchUnitPrototype();
         if (!document.getElementById("KomputerButton"))
         {
-            cacheElementsForStyling();
+            cacheElementsForStyling(thisGame);
+            styleGameMessageBox(thisGame);
             addRunButton("Let Komputer Play", runKomputerClick, thisGame);
             addStopButton("Stop", stopKomputerClick);
             addDarkModeToggle();
+            addBoardBuilder(thisGame);
         }
         // Add global error handling
         window.onerror = function() 
         {
             console.warn("Caught error. Will reset controls.");
-            clearIntervalsAndTimers();
-            resetGlobals(true);
+            stopAndReset(true);
         }
         return true;
     };
     return false;
+}
+
+
+function verifyElementalIds(thisGame)
+{
+    if (!thisGame)
+    {
+        return;
+    }
+    // The elemental Id is normally the registry index.
+    window.gameVersion = thisGame.$Foundation_$registry_index;
+    let isCorrectId = false;
+    if (document.getElementById('Foundation_Elemental_' + gameVersion + '_bottomTeamTitles'))
+    {
+        isCorrectId = true;
+    }
+    // Otherwise search for it.
+    if (!isCorrectId)
+    {
+        for (let i = 0; i < 42; i++)
+        {
+            if (document.getElementById('Foundation_Elemental_' + i + '_bottomTeamTitles'))
+            {
+                window.gameVersion = i;
+                isCorrectId = true;
+                break;
+            }
+        } 
+        if (!isCorrectId)
+        {
+            window.gameVersion = null;
+            return;
+        }
+    }
 }
 
 
@@ -65,12 +99,27 @@ function isGameReady(thisGame)
 // Begin play.
 function runKomputerClick(thisGame)
 {
-    if (window.isKomputerReady)
+    if (isKomputerReady)
     {
-        resetGlobals();
-        disableBoardBuilder();
-        styleButtonForRun();
-        runKomputer(thisGame);
+        if (thisGame.player.isMyTurn())
+        {
+            resetGlobals();
+            disableBoardBuilder();
+            styleButtonForRun();
+            runKomputer(thisGame);
+        }
+        else
+        {
+            window.isKomputerReady = false;
+            const isGameWon = thisGame.movePhase === 0;
+            const alternateMessage = "Enemy Turn";
+            resetKomputerButtonStyle(isGameWon, alternateMessage);
+            setTimeout(function()
+            {
+                window.isKomputerReady = true;
+                resetKomputerButtonStyle(isGameWon);
+            }, 1200);
+        }
     }
 }
 
@@ -85,21 +134,27 @@ function clearIntervalsAndTimers()
 }
 
 
-function resetGlobals(resetButton = false)
+function resetGlobals(resetKomputerButton = false)
 {
+    const thisGame = GamesByEmail.findFirstGame();
+    verifyElementalIds(thisGame);
+    window.currentPlayerTurn = thisGame.perspectiveColor;
+    window.isSmallBoard = thisGame.pieces.length === 62;
+    window.isLargeBoard = thisGame.pieces.length === 92;
     window.stopKomputer = false;
     window.moveIntervalId = null;
     window.movingUnitIndex = 0;
     window.moveWave = 0;
-    window.isExploring = false;
-    window.isBombarding = false;
-    window.isUnloading = false;
-    window.isManeuveringToAttack = false;
+    window.flashIndex = 0;
+    window.flashIds = [];
+    window.holdingUnits = [];
     window.hasBattleBegun = false;
-    window.gameVersion = GamesByEmail.findFirstGame().$Foundation_$registry_index;
-    window.currentPlayerTurn = Foundation.$registry[gameVersion].perspectiveColor;
+    window.isBombarding = false;
+    window.isExploring = false;
+    window.isManeuveringToAttack = false;
+    window.isUnloading = false;
     window.isKomputerReady = false;
-    if (resetButton)
+    if (resetKomputerButton)
     {
         resetKomputerButtonStyle(false);
         window.isKomputerReady = true;
@@ -114,8 +169,13 @@ function runKomputer(thisGame)
         stopAndReset();
         return;
     }
-    maybeClearHumanExploration(thisGame);
-    // Handle current state
+    hideEndTurnButtons();
+    maybeClearLastAction(thisGame);
+    setTimeout(function(){ handleCurrentState(thisGame) }, 100);
+}
+
+function handleCurrentState(thisGame)
+{
     console.log("Checking movePhase.");
     switch(thisGame.movePhase)
     {
@@ -152,19 +212,27 @@ function runKomputer(thisGame)
 }
 
 
-// If the human player started to explore but didn't place tiles, set them.
-function maybeClearHumanExploration(thisGame)
+// If the human began to explore or fight, clear this first.
+function maybeClearLastAction(thisGame)
 {
+    let activeExploration = thisGame.playOptions.mapCustomizationData;
     const isNotCapitalMovePhase = thisGame.movePhase !== 2;
-    if (isNotCapitalMovePhase && thisGame.playOptions.mapCustomization)
+    if (isNotCapitalMovePhase && activeExploration.length > 0)
     {
+        thisGame.playOptions.mapCustomizationData = shuffle(activeExploration);
         thisGame.customizeMapDoAll(true);
+    }
+    let overlayCommit = document.getElementById("Foundation_Elemental_" + gameVersion + "_overlayCommit");
+    if (overlayCommit && overlayCommit.value === "Roll for Battle")
+    {
+        thisGame.undo();
     }
 }
 
 
 function moveUnits(thisGame)
 {
+    hideEndTurnButtons();
     const moveIntervalPeriod = 1500;
     const initialDelay = 400;
     setTimeout(async function(plan){
@@ -185,9 +253,10 @@ function moveUnits(thisGame)
             }
             case 2: {
                 console.log("May move all available.");
-                let landUnits = findAvailableLandUnits(thisGame, thisGame.perspectiveColor);
-                const frigates = findFrigates(thisGame, thisGame.perspectiveColor);
-                const allMilitaryUnits = landUnits.concat(frigates);
+                let army = findAvailableLandUnits(thisGame, thisGame.perspectiveColor);
+                const navy = findFrigates(thisGame, thisGame.perspectiveColor);
+                const armyNavy = army.concat(navy);
+                const allMilitaryUnits = armyNavy.concat(window.holdingUnits);
                 moveEachUnit(thisGame, allMilitaryUnits, moveIntervalPeriod, plan);
                 break;
             }
@@ -232,7 +301,7 @@ function findAvailableLandUnits(thisGame, color)
         }
         for (const unit of piece.units)
         {
-            if (unit.color === color && unit.type !== "f" && ( unit.canMove() || unit.canBombard()) )
+            if (unit.color === color && unit.type !== "f" && ( unit.canMove() || unit.canBombard()) && !unit.holding)
             {
                 landUnits.push(unit);
             }
@@ -264,7 +333,6 @@ function orderFromFarthestToEnemy(thisGame, units, reverse)
         unit.minDistanceToEnemy = minDistance;
     }
     units.sort(function(a, b){ return b.minDistanceToEnemy - a.minDistanceToEnemy });
-    // This hack drives me crazy, but it's necessary for now.  
     if (reverse)
     {
         units.reverse();
@@ -298,7 +366,7 @@ async function endMovementPhase(thisGame)
 {
     // Reset movement, then restart loop to place reserves, or stop for the next player.
     window.moveWave = 0;
-
+    clearHoldingUnits();
     thisGame.endMyMovement();
     window.moveIntervalId = await setInterval(function(){
         if (thisGame.movePhase === 11)
@@ -330,7 +398,7 @@ async function moveEachUnit(thisGame, movableUnits, intervalPeriod)
             return;
         }
         // Check for any battle that should be fought before further moves.
-        if (thisGame.hasBattlesPending)
+        if (thisGame.hasBattlesPending && !isExploring && !isUnloading)
         {
             for (const piece of thisGame.pieces)
             {
@@ -342,7 +410,7 @@ async function moveEachUnit(thisGame, movableUnits, intervalPeriod)
                     }
                     console.log("Blitz attack!");
                     clearIntervalsAndTimers();
-                    ensureMovementComplete(thisGame, piece);
+                    clearMovementFlags();
                     fightBattle(thisGame, piece);
                     return;
                 }
@@ -358,67 +426,81 @@ async function moveEachUnit(thisGame, movableUnits, intervalPeriod)
             const possibleMoves = unit.getMovables();
             if (possibleMoves)
             {
-                // Decide best move, or maybe don't accept any move to stay.
+                // Decide best move, or don't accept any to stay.
                 const isEarlyMover = decideIsEarlyMover(thisGame, firstMoveWave, movableUnits.length);
-                const pieceIndex = getBestMove(thisGame, possibleMoves, unit, isEarlyMover).index;
+                const bestMove = decideBestMove(thisGame, possibleMoves, unit, isEarlyMover);
+                const pieceIndex = bestMove.index;
                 const shouldAcceptMove = decideMoveAcceptance(thisGame, unit, pieceIndex);
                 if (shouldAcceptMove)
                 {
-                    // Move unit.
-                    const isUnitSelected = moveUnitSimulateMouseDown(thisGame, unit.screenPoint, unit.type);
-                    if (isUnitSelected)
-                    {
-                        const destinationScreenPoint = thisGame.pieces[pieceIndex].$screenRect.getCenter();
-                        moveUnitSimulateMouseUp(thisGame, destinationScreenPoint);
-                        // Commit to explore after some processing time.
-                        const normalPopup = document.getElementById("Foundation_Elemental_" + gameVersion + "_overlayCommit");
-                        if (normalPopup || document.getElementById("Foundation_Elemental_" + gameVersion + "_customizeMapDoAll"))
+                    flashMoveTrail(thisGame, unit, possibleMoves, bestMove);
+                    setTimeout(function(){
+                        // Move unit.
+                        const isUnitSelected = moveUnitSimulateMouseDown(thisGame, unit.screenPoint, unit.type);
+                        if (isUnitSelected)
                         {
-                            window.isExploring = true;
-                            if (normalPopup)
+                            const destinationScreenPoint = thisGame.pieces[pieceIndex].$screenRect.getCenter();
+                            moveUnitSimulateMouseUp(thisGame, destinationScreenPoint);
+                            // Commit to explore after some processing time.
+                            const normalPopup = document.getElementById("Foundation_Elemental_" + gameVersion + "_overlayCommit");
+                            if (normalPopup || document.getElementById("Foundation_Elemental_" + gameVersion + "_customizeMapDoAll"))
                             {
-                                thisGame.overlayCommitOnClick();
+                                window.isExploring = true;
+                                if (normalPopup)
+                                {
+                                    thisGame.overlayCommitOnClick();
+                                }
+                                setTimeout(function(){
+                                    settleExploredTerrain(thisGame, unit);
+                                }, 200);
                             }
-                            setTimeout(function(){
-                                settleExploredTerrain(thisGame, unit);
-                            }, 200);
-                        }
-                        // Make sure frigates can unload all cargo
-                        if (unit.isFrigate() && unit.hasUnloadables() && (window.moveWave === finalMoveWave) && thisGame.pieces[pieceIndex].isLand())
-                        {
-                            window.isUnloading = true;
-                        }
+                            // Make sure frigates can unload all cargo
+                            if (unit.isFrigate() && unit.hasUnloadables() && (window.moveWave === finalMoveWave) && thisGame.pieces[pieceIndex].isLand())
+                            {
+                                window.isUnloading = true;
+                            }
+                            else
+                            {
+                                window.isUnloading = false
+                            }
+                        } // End if isUnitSelected
+                        // On the rare case the unit isn't ready, push it to the end for later.
                         else
                         {
-                            window.isUnloading = false
-                        }
-                    } // End if isUnitSelected
-                    // On the rare case the unit isn't ready, push it to the end for later.
-                    else
-                    {
-                        movableUnits.push(movableUnits.splice(window.movingUnitIndex, 1));
-                        window.isExploring = false;
-                        window.isUnloading = false;
-                        window.isManeuveringToAttack = false;
-                    }
+                            movableUnits.push(movableUnits.splice(window.movingUnitIndex, 1)[0]);
+                            clearMovementFlags();
+                        }   
+                    }, 300);
                 } // End if shouldAcceptMove
             } // End if possibleMoves
-            window.isManeuveringToAttack = (window.isManeuveringToAttack && !unit.movementComplete) ? true : false;
+            setTimeout(function(){
+                window.isManeuveringToAttack = (window.isManeuveringToAttack && !unit.movementComplete && !unit.holding) ? true : false;}, 350);
         } // End if may move
-        decideHowToContinueMove(thisGame, movableUnits, unit, finalMoveWave);
+        setTimeout(function(){
+            decideHowToContinueMove(thisGame, movableUnits, unit, finalMoveWave);}, 400);
     }, intervalPeriod);
 }
 
 
 function ensureMovementComplete(thisGame, battlePiece)
 {
-    for (const unit of battlePiece.units)
+    const piece = thisGame.pieces[battlePiece.index];
+    for (let unit of piece.units)
     {
-        if (unit.color === thisGame.perspectiveColor)
+        if (unit.isMilitary())
         {
             unit.movementComplete = true;
         }
     }
+}
+
+
+function clearMovementFlags()
+{
+    window.isBombarding = false
+    window.isExploring = false;
+    window.isManeuveringToAttack = false;
+    window.isUnloading = false;
 }
 
 
@@ -430,7 +512,7 @@ function getNextUnitIndex(movableUnits)
 
 function decideIsEarlyMover(thisGame, firstMoveWave, movingUnitsLength)
 {
-    const isEarlyMoverConsidered = thisGame.maxMoveNumber > 25;
+    const isEarlyMoverConsidered = thisGame.maxMoveNumber > 25 && movingUnitsLength > 2;
     return (isEarlyMoverConsidered && window.moveWave === firstMoveWave && window.movingUnitIndex < (movingUnitsLength * 0.4))
 }
 
@@ -505,6 +587,44 @@ function settleExploredTerrain(thisGame, unit)
 }
 
 
+function flashMoveTrail(thisGame, unit, possibleMoves, movePoint)
+{
+    unit.setHilite(true);
+    let flashTrailPoints = [];
+    let runCount = 0;
+    const failsafe = 3;
+    do 
+    {
+        let piece = thisGame.pieces.findAtPoint(movePoint);
+        flashTrailPoints.unshift(piece.boardPoint);
+        for (const possibleMove of possibleMoves)
+        {
+            if (movePoint.retreatIndex === possibleMove.index)
+            {
+                movePoint = possibleMove;
+            }
+        }
+        runCount++;
+    } while (movePoint.retreatIndex !== unit.piece.index && runCount < failsafe)
+    window.flashIndex = 0;
+    window.flashIds.push(setInterval(function(){ 
+        if (window.flashIndex < flashTrailPoints.length)
+        {
+            thisGame.pieces.flash(1, null, flashTrailPoints[flashIndex]);
+            flashIndex++;
+        }
+        else
+        {
+            for (const Id of window.flashIds)
+            {
+                clearInterval(Id);
+            }
+            flashIndex = 0;
+        }
+    }, 200));
+}
+
+
 function isDoneExploring(thisGame)
 {
     return (thisGame.playOptions.mapCustomizationData === "");
@@ -513,6 +633,7 @@ function isDoneExploring(thisGame)
 
 function decideHowToContinueMove(thisGame, movableUnits, unit, finalMoveWave)
 {
+    hideEndTurnButtons();
     if (window.isExploring || window.isBombarding || window.isUnloading || window.isManeuveringToAttack)
     {
         // Pass: wait for these to finish.
@@ -546,7 +667,7 @@ function shouldBombard(thisGame, unit, finalMoveWave)
 }
 
 
-function getBestMove(thisGame, possibleMoves, unit, isEarlyMover)
+function decideBestMove(thisGame, possibleMoves, unit, isEarlyMover)
 {
     let bestMoveScore = -1;
     let bestMoves = [];
@@ -606,18 +727,16 @@ function getMoveScore(thisGame, possibleMove, unit, isEarlyMover)
                     return piece.hasCapital(enemyColor) ? 0.99 : defendingRollCount === 1 ? 0.98 : 0.96;
                 }
                 // Then look at weaker enemy towns.
-                else
-                {
-                    score = 1 - defensivePower;
-                }
+                score = 1 - defensivePower;
                 // Randomly vary the priority of attacks so that:
                 // Units often beseige, when random is low, and may attack a heavy defense even, when random is high.
                 score += 0.125 * Math.random() + (1 - score) * Math.random() * 0.25;
-                // More likely attack when already in an ideal seige location or occupying a civ not under seige.
+                // More likely attack when already in an ideal seige location or in a civ not under seige or in the capital.
                 if (((unit.piece.isMountain() || unit.piece.isForest()) && hasAdjacentEnemyCivilization(thisGame, unit.piece)) ||
-                    unit.piece.hasCivilization(thisGame.perspectiveColor) && !unit.piece.hasAdjacentRollingEnemy(thisGame.perspectiveColor, thisGame.player.team.rulerColor))
+                    ((unit.piece.hasCivilization(thisGame.perspectiveColor) && !unit.piece.hasAdjacentRollingEnemy(thisGame.perspectiveColor, thisGame.player.team.rulerColor))) || 
+                    unit.piece.hasCapital(thisGame.perspectiveColor))
                 {
-                    score += 0.0625;
+                    score += 0.125 
                 }
             }
             // Check enemy in the countryside.
@@ -627,7 +746,11 @@ function getMoveScore(thisGame, possibleMove, unit, isEarlyMover)
                 // Prioritize enemy beseiging / pinning a friendly town.
                 if (hasAdjacentFriendlyCiv(thisGame, piece))
                 {
-                    score += 0.125 * Math.random() + (1 - score) * Math.random() * 0.325;
+                    score += 0.12 * Math.random() + (1 - score) * Math.random() * 0.4;
+                    if (unit.piece.hasCapital(thisGame.perspectiveColor))
+                    {
+                        score = 0.96; 
+                    }
                 }
             }
             // More likely join battles already begun, especially artillery and cavalry, but avoid overkill on weak targets.
@@ -635,23 +758,31 @@ function getMoveScore(thisGame, possibleMove, unit, isEarlyMover)
             {
                 if (isNotOverkill(thisGame, piece))
                 {
-                    score += unit.type === "i" ? 0.1875 : 0.25;
+                    score += unit.type === "i" ? 0.2 : 0.4;
                 }
             }
         }
         // Try to beseige / pin enemy cities and towns, on the safest terrain.
-        else if (hasAdjacentEnemyCivilization(thisGame, piece))
+        else if (hasAdjacentEnemyCivilization(thisGame, piece) || 
+            (hasAdjacentEnemyArmy(thisGame, piece) && hasAdjacentBattle(thisGame, piece)))
         {
-            score = 0.7 + terrainDefenseBonus;
+            score = hasAdjacentEnemyCivilization(thisGame, piece) ? 0.7 + terrainDefenseBonus : 0.6 + terrainDefenseBonus;
             // If already in an ideal seige location, value another one less.
             if ((unit.piece.isMountain()) && hasAdjacentEnemyCivilization(thisGame, unit.piece))
             {
                 score -= 0.0625;
             }
+            // Try to never leave cavalry alone in the open next to an enemy civ.
+            const remainingMoveAllowance = unit.movementAllowance - unit.spacesMoved;
+            if (unit.isCavalry() && hasSmoothTerrain(thisGame, piece.index) && (piece.countMilitaryUnits(piece.units) == 0) &&
+                (possibleMove.spacesNeeded === remainingMoveAllowance))
+            {
+                score = 0;
+            }
             // Maybe maneuver unit before attack.
             // If unit has extra moves close to a battle, pass through open terrain to get more attack vectors.
-            const remainingMoveAllowance = unit.movementAllowance - unit.spacesMoved;
-            const canManeuverBeforeAttack = (possibleMove.spacesNeeded < remainingMoveAllowance);
+            const canManeuverBeforeAttack = (possibleMove.spacesNeeded < remainingMoveAllowance && 
+                (unit.type === "c" || hasSmoothTerrain(thisGame, piece.index) || Math.random() < 0.20));
             if (canManeuverBeforeAttack && hasAdjacentBattle(thisGame, piece)) 
             {
                 const battlePiece = findAdjacentBattle(thisGame, piece);
@@ -675,7 +806,7 @@ function getMoveScore(thisGame, possibleMove, unit, isEarlyMover)
             const isPinned = hasAdjacentEnemyArmy(thisGame, piece);
             const defensivePower = isPinned ? calculateDefensivePower(thisGame, piece) : 0;
             const threat = isPinned ? guessThreat(thisGame, piece) : 0;
-            score = (isPinned && defensivePower < threat) ? ( piece.hasCapital(thisGame.perspectiveColor) || (defensivePower < 3) ) ? 0.90 + (0.05 * Math.random()) : 0.8 + (0.125 * Math.random()): (0.7 / (guessTravelCostToEnemy(thisGame, unit, piece, enemyColor) + centerWeight));
+            score = (isPinned && defensivePower < threat) ? ( piece.hasCapital(thisGame.perspectiveColor) || (defensivePower < 3) ) ? 0.95 + (0.04 * Math.random()) : 0.92 + (0.04 * Math.random()): (0.7 / (guessTravelCostToEnemy(thisGame, unit, piece, enemyColor) + centerWeight));
             // Early movers emphasize offense.
             if (isEarlyMover && score > 0.7)
             {
@@ -686,9 +817,11 @@ function getMoveScore(thisGame, possibleMove, unit, isEarlyMover)
         else if (piece.hasFrigate(thisGame.perspectiveColor))
         {
             const frigate = piece.findFrigate(thisGame.perspectiveColor);
-            score = (!frigate.movementComplete || hasAdjacentEnemyCivilization(thisGame, piece) || hasAdjacentEnemyArmy(thisGame, piece)) ? 0.82 : 0.62;
+            const canReachEnemy = hasReachableEnemy(thisGame, frigate, true);
+            const hasCargo = frigate.cargo.length > 0;
+            score = ((!frigate.movementComplete && canReachEnemy) || hasAdjacentEnemyCivilization(thisGame, piece) || hasAdjacentEnemyArmy(thisGame, piece)) ? 0.82 : 0.62;
             // More likely board if others on board.
-            if (frigate.cargo.length > 0)
+            if ( hasCargo || (canReachEnemy && Math.random() < 0.6))
             {
                 // Results in a range of [0.945, 0.97625], so it may compete with any other attacking or defending moves, except maximum priority ones.
                 // Boarding with enough force to make a difference is often critical to be worthwhile.
@@ -716,8 +849,8 @@ function getMoveScore(thisGame, possibleMove, unit, isEarlyMover)
                 score += 0.125;
             }
         }
-        // Clamp score between [0,1].
-        score = score < 0 ? 0 : score > 1 ? 1 : score;
+        // Clamp and dampen score. Special cases return up to including 1. 
+        score = score < 0 ? 0 : score > 1 ? 0.95 : score;
         return score;
     }
 }
@@ -785,12 +918,14 @@ function getFrigateMoveScore(thisGame, piece, unit, enemyColor)
         const distanceWeight = distance ? (1 - 0.1 * distance) : 1;
         score = 0.7 * distanceWeight;
         const defenderCount = piece.countOpponentMilitary(thisGame.perspectiveColor); 
-        const defenderWeight = defenderCount ? 1 - (0.1 * defenderCount) : 1; 
+        const defenderWeight = defenderCount ? 1 - (0.03125 * defenderCount) : 1; 
         const hitTarget = distance === 0;
-        score += hitTarget ? 0.2 * defenderWeight : 0;
-        score += piece.hasBattle(thisGame.perspectiveColor, thisGame.player.team.rulerColor) ? 0.0625 : 0;
-        score += piece.hasOpponentTown(thisGame.perspectiveColor) && !piece.boardValue === "m" ? 0.03125 : 0;
-        score += piece.hasOpponentCivilization(thisGame.perspectiveColor) ? 0.03125 : 0;
+        score += hitTarget ? 0.125 * defenderWeight : 0;
+        score += piece.hasBattle(thisGame.perspectiveColor, thisGame.player.team.rulerColor) ? 
+            isAdjacent(thisGame, unit.piece.boardPoint, piece.boardPoint) ? 0.125 : 0.09375 : 0;
+        score += piece.hasOpponentTown(thisGame.perspectiveColor) && !piece.isMountain() ? 0.0625 : 0;
+        score += piece.hasOpponentCivilization(thisGame.perspectiveColor) ? 0.03125 : 
+                piece.isMountain() ? 0.01875 : piece.isForest() ? 0.01125 : 0;
         if (hasEnemyFrigate)
         {
             score -= 0.03125;
@@ -817,9 +952,25 @@ function getFrigateMoveScore(thisGame, piece, unit, enemyColor)
     // Add small weight for other considerations.
     score += hasAdjacentBattle(thisGame, piece) ? 0.03125 : 0;
     score += hasAdjacentEnemyArmy(thisGame, piece) ? 0.03125 : 0;
-    // Clamp to [0,1].
-    score = score < 0 ? 0 : score > 1 ? 1 : score;
+    // Clamp to [0,2]. Values should hit between about [0,1], but an overflow capacity may be useful.
+    score = score < 0 ? 0 : score > 2 ? 2 : score;
     return score;
+}
+
+
+function hasReachableEnemy(thisGame, unit, viaImaginaryCargo)
+{
+    for (const piece of thisGame.pieces)
+    {
+        if (piece.hasRollingOpponent(thisGame.perspectiveColor))
+        {
+            if (isAccessibleNow(piece, unit, viaImaginaryCargo))
+            {
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 
@@ -918,7 +1069,7 @@ function guessThreat(thisGame, piece)
                     const adjacentPieceIndices = frigate.piece.getAdjacentIndecies(1);
                     for (const adjacentPieceIndex of adjacentPieceIndices)
                     {
-                        adjacentEnemyArmyCount += thisGame.pieces[adjacentPieceIndex].getMilitaryUnitCount(enemyColor);
+                        adjacentEnemyArmyCount += thisGame.pieces[adjacentPieceIndex].countOpponentMilitary(thisGame.perspectiveColor);
                         if (adjacentEnemyArmyCount + amphibArmyCount >= frigateCapacity)
                         {
                             hasFullLoadPotential = true;
@@ -1058,7 +1209,6 @@ function getDistanceToNearestFrigateTarget(thisGame, enemyCivs, originPiece)
     let minDistance = Number.MAX_VALUE;
     for (const civPiece of enemyCivs)
     {
-        //distance = guessTravelCostToEnemy(thisGame, unit, piece, enemyColor);
         distance = thisGame.distanceBewteenPoints(civPiece.boardPoint, originPiece.boardPoint);
         if (distance < minDistance)
         {
@@ -1071,6 +1221,10 @@ function getDistanceToNearestFrigateTarget(thisGame, enemyCivs, originPiece)
 
 function decideMoveAcceptance(thisGame, unit, destinationIndex)
 {
+    if (unit.piece.hasBattle(thisGame.perspectiveColor, thisGame.player.team.color))
+    {
+        return false;
+    }
     const destinationPiece = thisGame.pieces[destinationIndex];
     // Frigate rules:
     if (unit.isFrigate())
@@ -1100,7 +1254,7 @@ function decideMoveAcceptance(thisGame, unit, destinationIndex)
             // When a frigate guards a threatened friendly civ, only move for a battle.
             if (hasAdjacentFriendlyCiv(thisGame, unit.piece))
             {
-                const adjacentCiv = findAdjacentCivilization(thisGame, unit.piece);  // Todo: maybe find all.
+                const adjacentCiv = findAdjacentFriendlyCiv(thisGame, unit.piece);  // Todo: maybe find all.
                 if (hasThreat(thisGame, adjacentCiv) && !hasAdjacentBattle(thisGame, destinationPiece))
                 {
                     unit.movementComplete = true;
@@ -1116,42 +1270,63 @@ function decideMoveAcceptance(thisGame, unit, destinationIndex)
         if (isPinned)
         {
             // Going to own capital or from own capital to fight is always approved.
-            if (destinationPiece.hasCapital(thisGame.perspectiveColor) || ( unit.piece.hasCapital(thisGame.perspectiveColor) && destinationPiece.hasBattle(thisGame.perspectiveColor)) )
+            if (destinationPiece.hasCapital(thisGame.perspectiveColor) || ( unit.piece.hasCapital(thisGame.perspectiveColor) && destinationPiece.hasRollingOpponent(thisGame.perspectiveColor)))
             {
                 return true;
             }
-            // Cavalry may always join battles that don't have friendly cavalry.
-            if (unit.type === "c" && destinationPiece.hasBattle(thisGame.perspectiveColor, thisGame.player.team.rulerColor && !destinationPiece.hasCavalry(thisGame.perspectiveColor)))
+            // Cavalry may always join battles that don't have friendly cavalry and attack unguarded towns.
+            const unguarded = destinationPiece.countOpponentMilitary(thisGame.perspectiveColor) === 0;
+            if (unit.type === "c" && destinationPiece.hasBattle(thisGame.perspectiveColor, thisGame.player.team.rulerColor && !destinationPiece.hasCavalry(thisGame.perspectiveColor)) ||
+                unit.isCavalry() && destinationPiece.hasOpponentTown(thisGame.perspectiveColor) && unguarded)
             {
                 return true;
             }
-            // For last defenders:
+            // For last pinned defenders:
             const defenderCount = unit.piece.getMilitaryUnitCount(thisGame.perspectiveColor);
             if (defenderCount === 1)
             {
-                // If not joining a battle, stay. 
-                if (!destinationPiece.hasRollingOpponent(thisGame.perspectiveColor))
+                const attackingToBreakSiege = (destinationPiece.hasRollingOpponent(thisGame.perspectiveColor) && isAdjacent(thisGame, unit.piece.boardPoint, destinationPiece.boardPoint)) || window.isManeuveringToAttack === true;
+                const loneEnemy = destinationPiece.countOpponentMilitary(thisGame.perspectiveColor) === 1;
+                const friendlySupport = hasAdjacentSupport(thisGame, unit.piece); 
+                if (attackingToBreakSiege && loneEnemy && friendlySupport)
+                {
+                    return true;
+                }
+                else if (unit.isInfantry() || unit.isCavalry())
+                {
+                    unit.holding = true;
+                    window.holdingUnits.push(unit);
+                    return false;
+                }
+                else
                 {
                     unit.movementComplete = true;
                     return false;
                 }
             }
-            if (defenderCount === 2 && unit.type === "i")
+            if (defenderCount === 2 && unit.isInfantry())
             {
                 if (unit.piece.hasCavalry(thisGame.perspectiveColor) || unit.piece.hasArtillery(thisGame.perspectiveColor))
                 {
+                    unit.holding = true;
+                    window.holdingUnits.push(unit);
+                    return false;
+                }
+            }
+            if (isVulnerable(thisGame, unit.piece) && !destinationPiece.hasRollingOpponent(thisGame.perspectiveColor))
+            {
+                if (unit.isInfantry() || unit.isCavalry())
+                {
+                    unit.holding = true;
+                    window.holdingUnits.push(unit);
+                    return false;
+                }
+                else
+                {
                     unit.movementComplete = true;
                     return false;
                 }
             }
-        }
-        const defensivePower = calculateDefensivePower(thisGame, unit.piece);
-        const threat = guessThreat(thisGame, unit.piece);
-        const isVulnerable = defensivePower < threat;
-        if (isVulnerable && !destinationPiece.hasRollingOpponent(thisGame.perspectiveColor))
-        {
-            unit.movementComplete = true;
-            return false;
         }
     }
     // Default case: accept move.
@@ -1159,51 +1334,87 @@ function decideMoveAcceptance(thisGame, unit, destinationIndex)
 }
 
 
+function hasAdjacentSupport(thisGame, adjacentPiece)
+{
+    const adjacentPieceIndices = adjacentPiece.getAdjacentIndecies(1);
+    for (const adjacentPieceIndex of adjacentPieceIndices)
+    {
+        adjacentPiece = thisGame.pieces[adjacentPieceIndex];
+        if (adjacentPiece.getMilitaryUnitCount(thisGame.perspectiveColor))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+
+function isVulnerable(thisGame, piece)
+{
+    const defensivePower = calculateDefensivePower(thisGame, piece);
+    const threat = guessThreat(thisGame, piece);
+    return defensivePower < threat;
+}
+
+
+function clearHoldingUnits()
+{
+    for (let unit of window.holdingUnits)
+    {
+        unit.holding = false;
+    }
+}
+
+
 function bombard(thisGame, unit, bombardablePoints)
 {
-    bombardUnitsSimulateMouseDown(thisGame, unit);
-    const targetPoint = getBestTargetPoint(thisGame, bombardablePoints);
-    const targetPiece = thisGame.pieces.findAtPoint(targetPoint);
-    const targetScreenPoint = targetPiece.$screenRect.getCenter();
-    const fireDelay = 200;
+    const fireDelay = 400;
     setTimeout(function(){
-        const hasFired = bombardUnitsSimulateMouseUp(thisGame, targetScreenPoint);
-        if (hasFired)
-        {
-            const commitDelay = 200;
-            setTimeout(function(){
-                thisGame.overlayCommitOnClick();
-                // Apply hits.
-                const applyHitsDelay = 200;
+        bombardUnitsSimulateMouseDown(thisGame, unit);
+        const targetPoint = getBestTargetPoint(thisGame, bombardablePoints);
+        const targetPiece = thisGame.pieces.findAtPoint(targetPoint);
+        const targetScreenPoint = targetPiece.$screenRect.getCenter();
+        setTimeout(function(){
+            const hasFired = bombardUnitsSimulateMouseUp(thisGame, targetScreenPoint);
+            if (hasFired)
+            {
+                const commitDelay = 600;
                 setTimeout(function(){
-                    if (thisGame.battleData)
-                    {
-                        const data = thisGame.getBattleData();
-                        if (data && data.piece.defenderBattleInfo &&
-                            data.piece.defenderBattleInfo.decisionNeeded)
-                        {
-                            applyHits(thisGame, data.piece.index, data, true);
-                        }
-                    }
-                    const reviewDelay = 800;
+                    thisGame.overlayCommitOnClick();
+                    setTimeout(function(){ replaceBattleMessage() }, 16);
+                    // Apply hits.
+                    const applyHitsDelay = 200;
                     setTimeout(function(){
-                        thisGame.pieces[targetPiece.index].bombardOkClick(thisGame.player.team.color);
-                        unit.hasBombarded = unit.noBombard = unit.movementComplete = true;
-                        console.log("Bombardment!");
-                        window.isBombarding = false;
-                    }, reviewDelay)
-                }, applyHitsDelay);
-            }, commitDelay);
-        } // End if hasFired
-        else
-        {
-            // Rare case: failure to fire indicates some abnormal interferance, so stop trying to fire.
-            unit.hasBombarded = true;
-            unit.noBombard = true;
-            unit.movementComplete = true;
-            window.isBombarding = false;
-        }
-    }, fireDelay);
+                        replaceBattleMessage();
+                        if (thisGame.battleData)
+                        {
+                            const data = thisGame.getBattleData();
+                            if (data && data.piece.defenderBattleInfo &&
+                                data.piece.defenderBattleInfo.decisionNeeded)
+                            {
+                                applyHits(thisGame, data.piece.index, data, true);
+                            }
+                        }
+                        const reviewDelay = 800;
+                        setTimeout(function(){
+                            thisGame.pieces[targetPiece.index].bombardOkClick(thisGame.player.team.color);
+                            unit.hasBombarded = unit.noBombard = unit.movementComplete = true;
+                            console.log("Bombardment!");
+                            window.isBombarding = false;
+                        }, reviewDelay)
+                    }, applyHitsDelay);
+                }, commitDelay);
+            } // End if hasFired
+            else
+            {
+                // Rare case: failure to fire indicates some abnormal interferance, so stop trying to fire.
+                unit.hasBombarded = true;
+                unit.noBombard = true;
+                unit.movementComplete = true;
+                window.isBombarding = false;
+            }
+        }, fireDelay);
+    }, fireDelay)
 }
 
 
@@ -1245,12 +1456,9 @@ function findNextBattle(thisGame)
 function fightBattle(thisGame, battlePiece, isReserveBattle = false)
 {
     commitExploration(thisGame);
-    // Select battle.
-    if (!window.hasBattleBegun)
-    {
-        window.hasBattleBegun = true;
-        thisGame.moveUnitsMouseDown(battlePiece.$screenRect.getCenter());
-    }
+    hideEndTurnButtons();
+    selectBattle(thisGame, battlePiece);
+    ensureMovementComplete(thisGame, battlePiece);
     // Do prebattle artillery.
     if (document.getElementById("Foundation_Elemental_" + gameVersion + "_battleOk"))
     {
@@ -1260,9 +1468,11 @@ function fightBattle(thisGame, battlePiece, isReserveBattle = false)
     const rollDelay = 400;
     setTimeout(function roll(){
         thisGame.overlayCommitOnClick();
+        setTimeout(replaceBattleMessage, 100);
         // Apply hits.
         const applyHitsDelay = 400;
         setTimeout(function(){
+            replaceBattleMessage();
             if (thisGame.battleData)
             {
                 const data = thisGame.getBattleData();
@@ -1276,6 +1486,7 @@ function fightBattle(thisGame, battlePiece, isReserveBattle = false)
             }
             // Roll again or close after review, then continue game / find next battle.
             const battleReviewDelay = 1600;
+            hideEndTurnButtons();
             setTimeout(function(){
                 const hasNotWonGame = thisGame.movePhase !== 0; 
                 if (hasNotWonGame)
@@ -1285,7 +1496,9 @@ function fightBattle(thisGame, battlePiece, isReserveBattle = false)
                     // The battlePiece object is no longer a reference to the game piece! 
                     // Many bothans died to bring us this information.
                     thisGame.pieces[battlePiece.index].battleOkClick(thisGame.player.team.color);
-                    const reRollDelay = 1000;
+                    const reRollDelay = 1200;
+                    hideEndTurnButtons();
+                    replaceBattleMessage();
                     setTimeout(function(){
                         if (document.getElementById("Foundation_Elemental_" + gameVersion + "_overlayCommit"))
                         {
@@ -1297,7 +1510,7 @@ function fightBattle(thisGame, battlePiece, isReserveBattle = false)
                             {
                                 // Clear the reserve interval now to prevent the Komputer from replaying a reserve battle.
                                 // Also prevents stopping the Komputer manually, until the turn is over - likely a couple seconds away. 
-                                clearInterval(window.reserveIntervalId);
+                                hideEndTurnButtons()
                                 setTimeout(function(){
                                     const battleReview = document.getElementById("Foundation_Elemental_" + gameVersion + "_battleOk");
                                     if (battleReview)
@@ -1305,6 +1518,7 @@ function fightBattle(thisGame, battlePiece, isReserveBattle = false)
                                         thisGame.pieces[battlePiece.index].battleOkClick(thisGame.player.team.color);
                                     }
                                     window.hasBattleBegun = false;
+                                    hideEndTurnButtons();
                                     setTimeout(function()
                                     {
                                         // Check for more reserve battles, which are rare, but possible.
@@ -1318,6 +1532,13 @@ function fightBattle(thisGame, battlePiece, isReserveBattle = false)
                             }
                             else
                             {
+                                // After battle, prevent further battles with a pennant.
+                                const piece = thisGame.pieces[battlePiece.index];
+                                if (piece.hasRollingOpponent(thisGame.perspectiveColor))
+                                {
+                                    const enemyColor = piece.units[0].color;
+                                    piece.addPennantIfNeeded(enemyColor, enemyColor, true, true);
+                                }
                                 window.hasBattleBegun = false;
                                 runKomputer(thisGame);
                             }
@@ -1345,6 +1566,26 @@ function commitExploration(thisGame)
     if (explorationPopup && !endTurnCommit)
     {
         thisGame.overlayCommitOnClick();
+    }
+}
+
+
+function selectBattle(thisGame, battlePiece)
+{
+    if (!window.hasBattleBegun)
+    {
+        window.hasBattleBegun = true;
+        thisGame.moveUnitsMouseDown(battlePiece.$screenRect.getCenter());
+    }
+}
+
+
+function replaceBattleMessage()
+{
+    let battleMessage = document.querySelector("#Foundation_Elemental_" + gameVersion + "_centerOverPiece > tbody > tr:nth-child(3) > td");
+    if (battleMessage && battleMessage.innerText.substr(0, 3) === "You")
+    {
+        battleMessage.innerText = "The Komputer " + battleMessage.innerText.substr(3);
     }
 }
 
@@ -1392,7 +1633,7 @@ function applyHits(thisGame, pieceIndex, battleData, isBombarding = false)
 async function placeReserves(thisGame)
 {
     clearIntervalsAndTimers();
-    window.reserveIntervalId = await setInterval(placeReserveUnit, 1400, thisGame);
+    window.reserveIntervalId = await setInterval(placeReserveUnit, 1200, thisGame);
 }
 
 
@@ -1406,6 +1647,7 @@ function placeReserveUnit(thisGame){
     {
         return;
     }
+    hideEndTurnButtons();
     const reserveUnits = thisGame.player.team.reserveUnits;
     const controlsCapital = thisGame.doesColorControlTheirCapital(thisGame.player.team.color);
     let hasPlayableReserveUnit = false;
@@ -1431,6 +1673,7 @@ function placeReserveUnit(thisGame){
             getBestReservable(thisGame, movingUnitType, controlsCapital) );
         const destinationScreenPoint = thisGame.screenRectFromBoardPoint(destinationBoardPoint).getCenter();
         thisGame.placeReserveOnMouseUp(destinationScreenPoint);
+        hideEndTurnButtons();
         // Maybe settle explored terrain.
         if (document.getElementById("Foundation_Elemental_" + gameVersion + "_overlayCommit") &&
             !document.getElementById("Foundation_Elemental_" + gameVersion + "_endMyTurn"))
@@ -1468,38 +1711,41 @@ function placeReserveUnit(thisGame){
     // End placing reserves. 
     else
     {
-        // Check board validity. 
-        const invalidPiece = thisGame.pieces.findByBoardValue("l");
-        if (invalidPiece)
-        {
-           fixPiecesPendingValue(thisGame, invalidPiece)
-        }
-        // Maybe recall units, fight reserve battles, or end turn.
+        clearInterval(window.reserveIntervalId);
+        ensureValidBoard(thisGame);
         maybeRecallTroops(thisGame);
         maybeRecallFrigatesToPort(thisGame);
         maybeFightReserveBattle(thisGame);
         if (!thisGame.hasBattlesPending && !hasBattleBegun)
         {
-            endReservePhase(thisGame);
+            setTimeout(function(){ endReservePhase(thisGame) }, 200);
         }
     }
 }
 
 
+function ensureValidBoard(thisGame)
+{
+    const invalidPiece = thisGame.pieces.findByBoardValue("l");
+    if (invalidPiece)
+    {
+        fixPiecesPendingValue(thisGame, invalidPiece);
+    }   
+}
+
+
 function endReservePhase(thisGame)
 {
-    setTimeout(function(){
-        clearIntervalsAndTimers();
-        if (window.currentPlayerTurn === thisGame.perspectiveColor)
-        {
-            thisGame.moveToNextPlayer();
-            thisGame.sendMove();
-        }
-        window.hasBattleBegun = false;
-        window.isKomputerReady = true;
-        resetKomputerButtonStyle();
-        console.log("Done.");
-    }, 100)
+    clearIntervalsAndTimers();
+    if (window.currentPlayerTurn === thisGame.perspectiveColor)
+    {
+        thisGame.moveToNextPlayer();
+        thisGame.sendMove();
+    }
+    window.hasBattleBegun = false;
+    window.isKomputerReady = true;
+    resetKomputerButtonStyle();
+    console.log("Done.");
 }
 
 
@@ -1642,7 +1888,7 @@ function getBestBuildable(thisGame)
     }
     // Default (no new terrain): choose roughly midway to front lines.
     // If default already has a town, try to reinforce a central point, then build up wings before the tail.
-    const defaultPoint = buildablePoints[Math.floor(buildablePoints.length / 2)];
+    const defaultPoint = buildablePoints[Math.floor(buildablePoints.length * 0.5)];
     return (bestCentralPoint && thisGame.pieces.findAtPoint(defaultPoint).hasTown(thisGame.perspectiveColor)) ? 
         bestCentralPoint : buildWingsBeforeTail(thisGame, buildablePoints, defaultPoint);
 }
@@ -1955,27 +2201,6 @@ function fixPiecesPendingValue(thisGame, piecePendingValue)
 }
 
 
-function setPiecesPendingValue(thisGame, boardValue)
-{
-    let piecePendingValue = thisGame.pieces.findByBoardValue("l");
-    if (piecePendingValue)
-    {        
-        let logData = new Array();
-        while (piecePendingValue) {
-            const landHexValue = boardValue;
-            piecePendingValue.setValue(landHexValue);
-            thisGame.maybeUndarkPiece(piecePendingValue);
-            logData.push(piecePendingValue.index);
-            logData.push(landHexValue);
-            piecePendingValue = thisGame.pieces.findByBoardValue("l");
-        }
-        thisGame.clearMapCustomizationData();
-        thisGame.pushMapCustomizationMove(piecePendingValue, logData, logData.length);
-        thisGame.update();
-    }
-}
-
-
 // Original codebase function modified to get any terrain type, including water.
 function getRandomAvailableHexValue(thisGame)
 {
@@ -2006,28 +2231,38 @@ function maybeRecallTroops(thisGame)
         let armyUnits = getArmyUnits(thisGame, thisGame.perspectiveColor);
         if (armyUnits && armyUnits.length > 0)
         {
-            const recallUnits = getPrioritzedRecallUnits(thisGame, armyUnits);
-            for (const unit of recallUnits)
+            counterGraveDanger(thisGame, armyUnits);
+            armyUnits = getArmyUnits(thisGame, thisGame.perspectiveColor);
+            counterThreats(thisGame, armyUnits);
+        }
+    }
+}
+
+
+function counterGraveDanger(thisGame, armyUnits)
+{
+    const usingCavalry = false;
+    const recallUnits = getPrioritizedRecallUnits(thisGame, armyUnits, usingCavalry);
+    for (const unit of recallUnits)
+    {
+        if (isLoneCivDefender(thisGame, unit) && hasThreat(thisGame, unit.piece))
+        {
+            continue;
+        }
+        const reservables = thisGame.pieces.getReservables(unit.color,unit.rulerColor,unit.type,thisGame.doesColorControlTheirCapital(unit.color));
+        if (reservables && reservables.length > 0)
+        {
+            for (const reservablePoint of reservables)
             {
-                if (unit.type === "c" || (isLoneCivDefender(thisGame, unit) && hasThreat(thisGame, unit.piece)))
+                const civPiece = thisGame.pieces.findAtPoint(reservablePoint);
+                if (hasGraveDanger(thisGame, civPiece))
                 {
-                    continue;
-                }
-                const reservables = thisGame.pieces.getReservables(unit.color,unit.rulerColor,unit.type,thisGame.doesColorControlTheirCapital(unit.color));
-                if (reservables && reservables.length > 0)
-                {
-                    for (const reservablePoint of reservables)
-                    {
-                        const civPiece = thisGame.pieces.findAtPoint(reservablePoint);
-                        if (hasGraveDanger(thisGame, civPiece))
-                        {
-                            thisGame.reservePhaseOnMouseDown(unit.screenPoint);
-                            const targetPiece = thisGame.pieces.findAtPoint(reservablePoint);
-                            const targetScreenPoint = targetPiece.$screenRect.getCenter();
-                            thisGame.redeployUnitsMouseUp(targetScreenPoint);
-                            console.log("Troops recalled for civil defense!")
-                        }
-                    }
+                    thisGame.reservePhaseOnMouseDown(unit.screenPoint);
+                    const targetPiece = thisGame.pieces.findAtPoint(reservablePoint);
+                    const targetScreenPoint = targetPiece.$screenRect.getCenter();
+                    thisGame.redeployUnitsMouseUp(targetScreenPoint);
+                    console.log("Troops recalled for civil defense!")
+                    break;
                 }
             }
         }
@@ -2035,7 +2270,46 @@ function maybeRecallTroops(thisGame)
 }
 
 
-function getPrioritzedRecallUnits(thisGame, units)
+function counterThreats(thisGame, armyUnits)
+{
+    const usingCavalry = true;
+    const recallUnits = getPrioritizedRecallUnits(thisGame, armyUnits, usingCavalry);
+    for (const unit of recallUnits)
+    {
+        if ((isLoneCivDefender(thisGame, unit) || isSecondCivDefender(thisGame, unit)) && hasThreat(thisGame, unit.piece))
+        {
+            continue;
+        }
+        const reservables = thisGame.pieces.getReservables(unit.color,unit.rulerColor,unit.type,thisGame.doesColorControlTheirCapital(unit.color));
+        if (reservables && reservables.length > 0)
+        {
+            for (let index = 0; index < reservables.length; index++)
+            {
+                const reservablePoint = reservables[index];
+                const civPiece = thisGame.pieces.findAtPoint(reservablePoint);
+                const lastIndex = reservables.length - 1;
+                if (civPiece.hasCapital(thisGame.perspectiveColor) && index !== lastIndex)
+                {
+                    reservables.push(reservables.splice(index, 1)[0]);
+                    index--;
+                    continue;
+                }
+                if (isVulnerable(thisGame, civPiece))
+                {
+                    thisGame.reservePhaseOnMouseDown(unit.screenPoint);
+                    const targetPiece = thisGame.pieces.findAtPoint(reservablePoint);
+                    const targetScreenPoint = targetPiece.$screenRect.getCenter();
+                    thisGame.redeployUnitsMouseUp(targetScreenPoint);
+                    console.log("Troops recalled for civil defense!")
+                    break;
+                }
+            }
+        }
+    }
+}
+
+
+function getPrioritizedRecallUnits(thisGame, units, usingCavalry)
 {
     // Avoid recall of troops near the enemy, as these may be pinned or holding a seige. 
     orderFromFarthestToEnemy(thisGame, units, true);
@@ -2047,11 +2321,11 @@ function getPrioritzedRecallUnits(thisGame, units)
         const unit = units[i];
         const piece = unit.piece;
         // Avoid recall of cavalry, which do best to support other troops and, unlike artillery, have no advantage alone.
-        const isNotCavalry = unit.type !== "c";
+        const useCavalry = usingCavalry ? unit.isCavalry() : !unit.isCavalry();
         if (primaryRecall.length === 0)
         {
             // Recall a unit from any large field army.
-            if (isNotCavalry && !piece.hasCivilization(thisGame.perspectiveColor) && piece.countMilitaryUnits(piece.units) > 2)
+            if (useCavalry && !piece.hasCivilization(thisGame.perspectiveColor) && piece.countMilitaryUnits(piece.units) > 2)
             {
                 primaryRecall = units.splice(i, 1);
                 continue;
@@ -2060,14 +2334,14 @@ function getPrioritzedRecallUnits(thisGame, units)
         if (secondaryRecall.length === 0)
         {
             // Recall a unit from any large civil army.
-            if (isNotCavalry && piece.hasCivilization(thisGame.perspectiveColor) && piece.countMilitaryUnits(piece.units) > 2)
+            if (useCavalry && piece.hasCivilization(thisGame.perspectiveColor) && piece.countMilitaryUnits(piece.units) > 2)
             {
                 secondaryRecall = units.splice(i, 1);
                 continue;
             }        
         }
         // Recall from troops in the field.
-        if (isNotCavalry && !piece.hasCivilization(thisGame.perspectiveColor))
+        if (useCavalry && !piece.hasCivilization(thisGame.perspectiveColor))
         {
             tertiaryRecall.push(units.splice(i, 1)[0]);
         }
@@ -2079,20 +2353,40 @@ function getPrioritzedRecallUnits(thisGame, units)
 function isLoneCivDefender(thisGame, unit)
 {
     const civPiece = unit.piece;
-    return (civPiece.hasCivilization(thisGame.perspectiveColor) && civPiece.countMilitaryUnits(civPiece.units) === 1);
+    if (civPiece)
+    {
+        return (civPiece.hasCivilization(thisGame.perspectiveColor) && civPiece.countMilitaryUnits(civPiece.units) === 1);
+    }
+    return true;
+}
+
+
+function isSecondCivDefender(thisGame, unit)
+{
+    const civPiece = unit.piece;
+    if (civPiece)
+    {
+        const count = civPiece.countMilitaryUnits(civPiece.units);
+        return (civPiece.hasCivilization(thisGame.perspectiveColor) && count === 2);
+    }
+    return true;
 }
 
 
 function hasThreat(thisGame, piece)
 {
-    return (guessThreat(thisGame, piece) > 0);
+    return piece ? (guessThreat(thisGame, piece) > 0) : false;
 }
 
 
 function hasGraveDanger(thisGame, civPiece)
 {
-    const weightedDangerThreshold = (civPiece.hasTown(thisGame.perspectiveColor) && !civPiece.isMountain()) ? 0 : 3;
-    return ((civPiece.countMilitaryUnits(civPiece.units) === 0) && (guessThreat(thisGame, civPiece) > weightedDangerThreshold));
+    if (civPiece)
+    {
+        const weightedDangerThreshold = (civPiece.hasTown(thisGame.perspectiveColor) && !civPiece.isMountain()) ? 0 : 3;
+        return ((civPiece.countMilitaryUnits(civPiece.units) === 0) && (guessThreat(thisGame, civPiece) > weightedDangerThreshold));
+    }
+    return false;
 }
 
 
@@ -2105,9 +2399,10 @@ function maybeRecallFrigatesToPort(thisGame)
         {
             for (const frigate of frigates)
             {
-                // Skip any frigate with cargo, with a pin, or supporting a friendly civ.  
+                // Skip any frigate with cargo, with a pin, or supporting a friendly.  
                 if (frigate.hasUnloadables() || hasAdjacentEnemyTown(thisGame, frigate.piece) || 
-                (hasAdjacentFriendlyCiv(thisGame, frigate.piece) && hasThreat(thisGame, findAdjacentCivilization(thisGame, frigate.piece)))) 
+                (hasAdjacentFriendlyCiv(thisGame, frigate.piece) && hasThreat(thisGame, findAdjacentFriendlyCiv(thisGame, frigate.piece))) ||
+                hasAdjacentFriendlyArmy(thisGame, frigate.piece) && hasThreat(thisGame, findAdjacentFriendlyArmy(thisGame, frigate.piece))) 
                 {
                     continue;
                 }
@@ -2169,9 +2464,9 @@ function placeCapital(thisGame)
 {
     // Maybe reset game move count, in the case a previous game was played.
     thisGame.maxMoveNumber = thisGame.maxMoveNumber < 6 ? thisGame.maxMoveNumber : 0;
-    const isFirstMove = (thisGame.maxMoveNumber < 2);
-    let pieceIndexStandardChoices = isFirstMove ? [7, 9, 24] : [36, 51, 53];
-    let pieceIndex = isFirstMove ? getFirstCapitalPieceIndex(thisGame, pieceIndexStandardChoices) : getSecondCapitalPieceIndex(thisGame, pieceIndexStandardChoices);
+    const isFirstPlayer = thisGame.perspectiveColor === 0;
+    let pieceIndexStandardChoices = getCommonInitialChoices(thisGame);
+    let pieceIndex = isFirstPlayer ? getFirstCapitalPieceIndex(thisGame, pieceIndexStandardChoices) : getNextCapitalPieceIndex(thisGame, pieceIndexStandardChoices);
     if (!pieceIndex)
     {
         pieceIndex = findRandomTargetPieceIndex(thisGame);
@@ -2238,7 +2533,7 @@ function placeCapital(thisGame)
                         {
                             let element = document.querySelector("#Foundation_Elemental_" + gameVersion + "_reserve_0");
                             thisGame.reserveOnMouseDown(null, thisGame.event("reserveOnMouseDown(this,event,#)"), 0);
-                            if (pieceIndexStandardChoices.includes(pieceIndex))
+                            if (getCommonInitialChoices(thisGame).includes(pieceIndex))
                             {
                                 pieceIndex = (pieceIndex < 51) ? pieceIndexStandardChoices[0] : (pieceIndex > 51) ? pieceIndexStandardChoices[1]: getRandomItem(pieceIndexStandardChoices);
                             }
@@ -2285,18 +2580,23 @@ function placeCapital(thisGame)
 
 function hasInvalidCapitalHexes(thisGame, pieceIndexChoices)
 {
-    if (thisGame.playOptions.mapCustomizationData.length)
+    if (pieceIndexChoices === null)
+    {
+        return true;
+    }
+    const defaultHexCount = 5;
+    if (thisGame.playOptions.mapCustomizationData.length >= defaultHexCount)
     {
         return false;
     }
     for (const pieceIndex of pieceIndexChoices)
     {
-        if (thisGame.isTargetPoint(thisGame.pieces[pieceIndex].boardPoint))
+        if (!thisGame.isTargetPoint(thisGame.pieces[pieceIndex].boardPoint))
         {
-            return false;
+            return true;
         }
     }
-    return true;
+    return false;
 }
 
 
@@ -2332,6 +2632,46 @@ function terrainCount(stringHexData, terrainType)
 }
 
 
+function getCommonInitialChoices(thisGame)
+{
+    const playerColor = thisGame.perspectiveColor;
+    const playerCount = thisGame.numberOfDistinctPlayers;
+    let smallBoardChoices = null;
+    let largeBoardChoices = null;
+    switch(playerColor)
+    {
+        case 0: 
+        {
+            smallBoardChoices = [7, 9, 24];
+            largeBoardChoices = [9, 11, 28];
+            break;
+        }
+        case 1:
+        {
+            smallBoardChoices = [36, 51, 53];
+            largeBoardChoices = playerCount === 2 ? [62, 79, 81] : playerCount === 3 ? [22, 41, 62] : null;
+            break;
+        }
+        case 2:
+        {
+            largeBoardChoices = [68, 83, 81];
+            break;
+        }
+        default:
+            break;
+    }
+    if (isSmallBoard)
+    {
+        return smallBoardChoices;
+    }
+    else if (isLargeBoard)
+    {
+        return largeBoardChoices;
+    }
+    return null;
+}
+
+
 function getFirstCapitalPieceIndex(thisGame, pieceIndexChoices)
 {
     if (hasInvalidCapitalHexes(thisGame, pieceIndexChoices))
@@ -2357,22 +2697,23 @@ function getFirstCapitalPieceIndex(thisGame, pieceIndexChoices)
 }
 
 
-function getSecondCapitalPieceIndex(thisGame, pieceIndexChoices)
+function getNextCapitalPieceIndex(thisGame, pieceIndexChoices)
 {
     if (hasInvalidCapitalHexes(thisGame, pieceIndexChoices))
     {
         return null;
     }
-    const enemyColor = !thisGame.perspectiveColor * 1;
     // Take the opposite side of the enemy, or if center, play random.
-    if (thisGame.pieces[9].hasUnit(enemyColor, "C"))
+    const centralIndex = isSmallBoard ? 9 : 11;
+    const enemyColor = !thisGame.perspectiveColor * 1;
+    if (isSmallBoard && thisGame.pieces[centralIndex].hasUnit(enemyColor, "C"))
     {
         return pieceIndexChoices.splice(getRandomIndexExclusive(pieceIndexChoices.length), 1);
     }
     const enemyCapitalPiece = thisGame.pieces.findCapitalPiece(enemyColor);
     if (enemyCapitalPiece)
     {
-        if (enemyCapitalPiece.index < 9)
+        if (enemyCapitalPiece.index < centralIndex)
         {
             return pieceIndexChoices.pop();
         }
@@ -2600,7 +2941,7 @@ function hasAdjacentFriendlyCiv(thisGame, piece)
 }
 
 
-function findAdjacentCivilization(thisGame, piece)
+function findAdjacentFriendlyCiv(thisGame, piece)
 {
       let adjacentPiece;
       return ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y)) != null && adjacentPiece.hasCivilization(thisGame.perspectiveColor)) ||
@@ -2609,6 +2950,19 @@ function findAdjacentCivilization(thisGame, piece)
           ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y+1)) != null && adjacentPiece.hasCivilization(thisGame.perspectiveColor)) ||
           ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y-1)) != null && adjacentPiece.hasCivilization(thisGame.perspectiveColor)) ||
           ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y+1)) != null && adjacentPiece.hasCivilization(thisGame.perspectiveColor)) ? adjacentPiece : null;
+}
+
+
+function findAdjacentFriendlyArmy(thisGame, piece)
+{
+    let color = thisGame.perspectiveColor;
+    let adjacentPiece;
+    return ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y)) != null && hasArmy(adjacentPiece, color)) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y)) != null && hasArmy(adjacentPiece, color)) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y-1)) != null && hasArmy(adjacentPiece, color)) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y+1)) != null && hasArmy(adjacentPiece, color)) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y-1)) != null && hasArmy(adjacentPiece, color)) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y+1)) != null && hasArmy(adjacentPiece, color)) ? adjacentPiece : null;
 }
 
 
@@ -2770,11 +3124,22 @@ function countAdjacentInlandSea(thisGame, piece)
 }
 
 
-function isAccessibleNow(piece, unit)
+function isAccessibleNow(piece, unit, viaImaginaryCargo)
 {
     if (piece && unit)
     {
-        const unitMovablePoints = unit.getMovables();
+        let unitMovablePoints = [];
+        if (unit.isFrigate() && viaImaginaryCargo)
+        {
+            const hasCargo = unit.cargo.length > 0;
+            maybeAddImaginaryCargo(unit, hasCargo);
+            unitMovablePoints = getFrigateMovables(unit);
+            removeImaginaryCargo(unit);
+        }
+        else
+        {
+            unitMovablePoints = unit.getMovables();
+        }
         if (unitMovablePoints.length)
         {
             for (const point of unitMovablePoints)
@@ -2840,6 +3205,19 @@ function hasAdjacentEnemyArmy(thisGame, piece)
         ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y+1)) != null && hasArmy(adjacentPiece, enemyColor)) ||
         ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y-1)) != null && hasArmy(adjacentPiece, enemyColor)) ||
         ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y+1)) != null && hasArmy(adjacentPiece, enemyColor));
+}
+
+
+function hasAdjacentFriendlyArmy(thisGame, piece)
+{
+    const color = thisGame.perspectiveColor;
+    let adjacentPiece;
+    return ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y)) != null && hasArmy(adjacentPiece, color)) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y)) != null && hasArmy(adjacentPiece, color)) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y-1)) != null && hasArmy(adjacentPiece, color)) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y+1)) != null && hasArmy(adjacentPiece, color)) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y-1)) != null && hasArmy(adjacentPiece, color)) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y+1)) != null && hasArmy(adjacentPiece, color));
 }
 
 
@@ -3184,6 +3562,93 @@ function patchPiecePrototype()
 }
 
 
+function patchGamePrototype()
+{
+    GamesByEmail.Viktory2Game.prototype.redeployUnitsMouseUp = function(screenPoint)
+    {
+        this.onMouseMove=null;
+        this.onLeftMouseUp=null;
+        var boardPoint=this.boardPointFromScreenPoint(this.constrainPoint(screenPoint));
+        var movingPiece=this.pieces.getNewPiece();
+        if (!boardPoint || !movingPiece)
+        {
+            return;
+        }
+        var movingUnit=movingPiece.movingUnit;
+        var oldPiece=movingPiece.movingUnit.piece;
+        if (this.isTargetPoint(boardPoint) && !boardPoint.equals(oldPiece.boardPoint))
+        {
+           this.readyToSend=false;
+           var log;
+           var target=this.pieces.findAtPoint(boardPoint);
+           if (movingUnit.isFrigate())
+           {
+              var civ=this.pieces.findAtPoint(this.getTargetPlaceHolderPoint(boardPoint)).findCivilization(movingUnit.color);
+              civ.tookReserveUnit(movingUnit.type);
+              log=this.logEntry(22,civ.piece.index,civ.piece.boardValue,civ.color,civ.type,movingUnit.type,target.index,target.boardValue);
+              if (movingUnit.cargo.length>0)
+              {
+                 this.player.team.reserveUnits+=movingUnit.cargo;
+                 log=this.logEntry(26,oldPiece.index,oldPiece.boardValue,movingUnit.color,movingUnit.cargo)+log;
+              }
+           }
+           else
+           {
+              var civ=target.findCivilization(movingUnit.color);
+              civ.tookReserveUnit(movingUnit.type);
+              log=this.logEntry(21,civ.piece.index,civ.piece.boardValue,civ.color,civ.type,movingUnit.type);
+           }
+           log=this.logEntry(25,oldPiece.index,oldPiece.boardValue,movingUnit.color,movingUnit.type)+log;
+           target.addUnit(movingUnit.color,movingUnit.type).movementComplete=true;
+           movingUnit.remove(true);
+           target.updateUnitDisplay();
+           this.setTargetPoints(null);
+           movingPiece.setMovingUnit(null);         
+           
+           this.pushMove("Redeploy and Place Reserve",log,target);
+           this.update();
+        }
+        else
+        {
+           this.setTargetPoints(null);
+           if (screenPoint.y>this.board.image.size.y+14)
+           {
+              this.readyToSend=false;
+              var log=this.logEntry(25,oldPiece.index,oldPiece.boardValue,movingUnit.color,movingUnit.type)+log;
+              if (movingUnit.isFrigate() &&
+                  movingUnit.cargo.length>0)
+                 log+=this.logEntry(26,oldPiece.index,oldPiece.boardValue,movingUnit.color,movingUnit.cargo);
+              movingUnit.remove(true);
+              movingPiece.setMovingUnit(null);
+              var nltd=this.nothingLeftToDo();
+              this.pushMove("Redeploy",log,oldPiece,"processMoveUnitMove",nltd,nltd ? "commitEndOfTurn" : null);
+              this.update();
+           }
+           else
+           {
+              var civ=oldPiece.findCivilization(movingUnit.color);
+              if (civ)
+                 civ.tookReserveUnit(movingUnit.type);
+              movingUnit.setVisibility(true);
+              movingPiece.setMovingUnit(null);
+           }
+        }
+     }
+}
+
+
+function styleGameMessageBox(thisGame)
+{
+    if (!thisGame.previewing)
+    {
+        let messageReadBox = document.getElementById("Foundation_Elemental_" + gameVersion + "_gameMessageRead");
+        let messageWriteBox = document.getElementById("Foundation_Elemental_" + gameVersion + "_gameMessageWrite");
+        messageReadBox.style.height = 164;
+        messageWriteBox.style.height = 72
+    }
+}
+
+
 function addRunButton(text, onclick, pointerToGame) {
     let style = {position: 'absolute', top: getRunButtonTop(), left:'24px', 'z-index': '9999', "-webkit-transition-duration": "0.6s", "transition-duration": "0.6s", overflow: 'hidden', width: '128px', 'font-size': '10px'}
     let button = document.createElement('button'), btnStyle = button.style
@@ -3248,6 +3713,7 @@ function addDarkModeToggle()
     document.body.appendChild(toggle);
     // Toggle Label
     let toggleLabel = document.createElement("label");
+    toggleLabel.id = "DarkModeLabel";
     toggleLabel.htmlFor = "DarkModeToggle";
     toggleLabel.innerText = "Dark";
     style = {position: 'absolute', top: getDarkModeToggleLabelTop(), left:'147px', 'z-index': '9999', 'font-size': '8px'};
@@ -3258,24 +3724,24 @@ function addDarkModeToggle()
 
 function getRunButtonTop()
 {
-    return (window.scrollY + document.getElementById('Foundation_Elemental_7_bottomTeamTitles').getBoundingClientRect().top + 'px');
+    return (window.scrollY + document.getElementById('Foundation_Elemental_' + gameVersion + '_bottomTeamTitles').getBoundingClientRect().top + 'px');
 }
 
 function getStopButtonTop()
 {
-    return (window.scrollY + document.getElementById('Foundation_Elemental_7_bottomTeamTitles').getBoundingClientRect().top + 20 + 'px');
+    return (window.scrollY + document.getElementById('Foundation_Elemental_' + gameVersion + '_bottomTeamTitles').getBoundingClientRect().top + 20 + 'px');
 }
 
 
 function getDarkModeToggleTop()
 {
-    return (window.scrollY + document.getElementById('Foundation_Elemental_7_bottomTeamTitles').getBoundingClientRect().top + 18 + 'px');
+    return (window.scrollY + document.getElementById('Foundation_Elemental_' + gameVersion + '_bottomTeamTitles').getBoundingClientRect().top + 18 + 'px');
 }
 
 
 function getDarkModeToggleLabelTop()
 {
-    return (window.scrollY + document.getElementById('Foundation_Elemental_7_bottomTeamTitles').getBoundingClientRect().top + 22 + 'px');
+    return (window.scrollY + document.getElementById('Foundation_Elemental_' + gameVersion + '_bottomTeamTitles').getBoundingClientRect().top + 22 + 'px');
 }
 
 
@@ -3288,17 +3754,26 @@ function stopKomputerClick()
         {
             window.stopKomputer = false;
             resetStopKomputerButtonStyle();
-            throw new Error("Force Stop. Possibly no error. Error thrown in case of undetected infinite loop.")
+            throw new Error(getErrorMessage());
         }
     }, 3000);
 }
 
 
-function stopAndReset()
+function getErrorMessage()
+{
+    return "Force Stop. Possibly no error. Error thrown in case of undetected infinite loop. \
+The Stop Button was pressed when it appears the Komputer was not running. \
+If so, please ignore this message. If the game was hung, I apologize - feel free to send the error here: \n\
+stephen.montague.viktory@gmail.com"
+}
+
+
+function stopAndReset(resetKomputerButton = true)
 {
     clearIntervalsAndTimers();
     resetAllButtonStyles();
-    resetGlobals(true);
+    resetGlobals(resetKomputerButton);
     console.log("Manually Stopped.");
 }
 
@@ -3307,6 +3782,8 @@ function resetAllButtonStyles()
 {
     resetKomputerButtonStyle();
     resetStopKomputerButtonStyle();
+    resetButtonPositions();
+    showEndTurnButtons();
 }
 
 
@@ -3316,6 +3793,7 @@ function styleButtonForStop()
     button.style.backgroundColor = 'lightpink';
     button.style.color = 'crimson';
     button.innerText = "Stopping";
+    resetButtonPositions();
 }
 
 
@@ -3325,15 +3803,17 @@ function styleButtonForRun()
     button.style.backgroundColor = 'mediumseagreen';
     button.style.color = 'crimson';
     button.innerText = "Running";
+    resetButtonPositions();
 }
 
 
-function resetKomputerButtonStyle(isGameWon = false)
+function resetKomputerButtonStyle(isGameWon = false, message = "Let Komputer Play")
 {
     let button = document.getElementById("KomputerButton");
     button.style.backgroundColor = '';
     button.style.color = '';
-    button.innerText = isGameWon ? "Viktory" : "Let Komputer Play";
+    button.innerText = isGameWon ? "Viktory" : message;
+    resetButtonPositions();
 }
 
 
@@ -3343,126 +3823,213 @@ function resetStopKomputerButtonStyle()
     button.style.backgroundColor = '';
     button.style.color = '';
     button.innerText = "Stop";
+    resetButtonPositions();
 }
 
 
-function cacheElementsForStyling()
+function resetButtonPositions()
 {
-    window.cache = [
-        document.getElementById("Foundation_Elemental_1_content").cloneNode(true),
-        document.getElementById("Foundation_Elemental_1_title_0").cloneNode(true),
-        document.getElementById("Foundation_Elemental_1_title_1").cloneNode(true),
-        document.getElementById("Foundation_Elemental_1_title_2").cloneNode(true),
-        document.querySelector("#Foundation_Elemental_1_tabs > tbody > tr > td:nth-child(1)").cloneNode(true),
-        document.querySelector("#Foundation_Elemental_1_tabs > tbody > tr > td:nth-child(3)").cloneNode(true),
-        document.querySelector("#Foundation_Elemental_1_tabs > tbody > tr > td:nth-child(5)").cloneNode(true),
-        document.querySelector("#Foundation_Elemental_1_tabs > tbody > tr > td:nth-child(7)").cloneNode(true),
-        document.getElementById("Foundation_Elemental_" + gameVersion + "_gameMessageRead").cloneNode(true),
-        document.getElementById("Foundation_Elemental_" + gameVersion + "_playerNotes").cloneNode(true),
-        document.getElementById("Foundation_Elemental_" + gameVersion + "_gameMessageWrite").cloneNode(true),
-        document.querySelector("body > div > div:nth-child(6)").cloneNode(true)
-    ]
+    let runButton = document.getElementById("KomputerButton");
+    runButton.style.top = getRunButtonTop();
+    let stopButton = document.getElementById("StopKomputerButton");
+    stopButton.style.top = getStopButtonTop();
+    let darkModeToggle = document.getElementById("DarkModeToggle");
+    darkModeToggle.style.top = getDarkModeToggleTop();
+    let darkModeLabel = document.getElementById("DarkModeLabel");
+    darkModeLabel.style.top = getDarkModeToggleLabelTop();
+}
+
+
+function cacheElementsForStyling(thisGame)
+{
+    if (thisGame.previewing)
+    {
+        window.cacheElements = [
+            document.getElementById("Foundation_Elemental_1_content").cloneNode(true),
+            document.getElementById("Foundation_Elemental_1_title_0").cloneNode(true),
+            document.getElementById("Foundation_Elemental_1_title_1").cloneNode(true),
+            document.getElementById("Foundation_Elemental_1_title_2").cloneNode(true),
+            document.querySelector("#Foundation_Elemental_1_tabs > tbody > tr > td:nth-child(1)").cloneNode(true),
+            document.querySelector("#Foundation_Elemental_1_tabs > tbody > tr > td:nth-child(3)").cloneNode(true),
+            document.querySelector("#Foundation_Elemental_1_tabs > tbody > tr > td:nth-child(5)").cloneNode(true),
+            document.querySelector("#Foundation_Elemental_1_tabs > tbody > tr > td:nth-child(7)").cloneNode(true),
+            document.getElementById("Foundation_Elemental_" + gameVersion + "_gameMessageRead").cloneNode(true),
+            document.getElementById("Foundation_Elemental_" + gameVersion + "_playerNotes").cloneNode(true),
+            document.getElementById("Foundation_Elemental_" + gameVersion + "_gameMessageWrite").cloneNode(true),
+            document.querySelector("body > div > div:nth-child(6)").cloneNode(true)
+        ];
+    }
+    else
+    {
+        window.cacheElements = [
+            document.getElementById("Foundation_Elemental_" + gameVersion + "_gameMessageRead").cloneNode(true),
+            document.getElementById("Foundation_Elemental_" + gameVersion + "_playerNotes").cloneNode(true),
+            document.getElementById("Foundation_Elemental_" + gameVersion + "_gameMessageWrite").cloneNode(true),
+        ];
+    }
 }
 
 
 function maybeStylePage(isDarkMode)
 {
-    let content = document.getElementById("Foundation_Elemental_1_content");
-    let bottomDiv = document.querySelector("body > div > div:nth-child(6)");
+    resetButtonPositions();
+    let content = getDocumentContent(); 
     if (isDarkMode)
     {
-        if(isNotDark(content, bottomDiv))
+        if(isNotDark(content))
         {
-            applyDarkMode(content, bottomDiv);
+            applyDarkMode(content);
         }
     }
     else
     {   
-        if(isNotLight(content, bottomDiv))
+        if(isNotLight(content))
         {
-            applyLightMode(content, bottomDiv);
+            applyLightMode(content);
         }
     }
 }
 
 
-function isNotDark(content, bottomDiv)
+function isNotDark(content)
 {
-    return (document.body.style.backgroundColor !== 'dimgrey' ||
-        content.style.backgroundColor !== 'slategrey' || 
-        bottomDiv.style.backgroundColor !== 'grey');
+    return (content.style.backgroundColor !== 'slategrey');
 }
 
 
-function isNotLight(content, bottomDiv)
+function isNotLight(content)
 {
-    return (document.body.style.backgroundColor !== '' ||
-        content.style.backgroundColor !== 'rgb(238, 238, 255)' || 
-        bottomDiv.style.backgroundColor !== 'rgb(238, 238, 255)');
+    return (content.style.backgroundColor !== 'rgb(238, 238, 255)');
 }
 
 
-function applyDarkMode(content, bottomDiv)
+function applyDarkMode(content)
 {
-    document.body.style.backgroundColor = 'dimgrey';
-    content.style.backgroundColor = 'slategrey';
-    window.cacheContentBackgroundColor = content.style.backgroundColor;
-    content.style.border = '';
-    let title_0 = document.getElementById("Foundation_Elemental_1_title_0");
-    let title_1 = document.getElementById("Foundation_Elemental_1_title_1");
-    let title_2 = document.getElementById("Foundation_Elemental_1_title_2");
-    title_0.style.backgroundColor = 'grey'
-    title_1.style.backgroundColor = 'grey';
-    title_2.style.backgroundColor = 'lightgrey';
-    title_0.style.border = '';
-    title_1.style.border = '';
-    title_2.style.border = '';
-    let titleSpacer0 = document.querySelector("#Foundation_Elemental_1_tabs > tbody > tr > td:nth-child(1)");
-    let titleSpacer1 = document.querySelector("#Foundation_Elemental_1_tabs > tbody > tr > td:nth-child(3)");
-    let titleSpacer2 = document.querySelector("#Foundation_Elemental_1_tabs > tbody > tr > td:nth-child(5)");
-    let titleSpacer3 = document.querySelector("#Foundation_Elemental_1_tabs > tbody > tr > td:nth-child(7)");
-    titleSpacer0.style.border = '';
-    titleSpacer1.style.border = '';
-    titleSpacer2.style.border = '';
-    titleSpacer3.style.border = '';
+    let thisGame = GamesByEmail.findFirstGame();
+    if (thisGame.previewing)
+    {
+        document.body.style.backgroundColor = 'dimgrey';
+        content.style.backgroundColor = 'slategrey';
+        window.cacheContentBackgroundColor = content.style.backgroundColor;
+        content.style.border = '';
+        let title_0 = document.getElementById("Foundation_Elemental_1_title_0");
+        let title_1 = document.getElementById("Foundation_Elemental_1_title_1");
+        let title_2 = document.getElementById("Foundation_Elemental_1_title_2");
+        title_0.style.backgroundColor = 'grey'
+        title_1.style.backgroundColor = 'grey';
+        title_2.style.backgroundColor = 'lightgrey';
+        title_0.style.border = '';
+        title_1.style.border = '';
+        title_2.style.border = '';
+        let titleSpacer0 = document.querySelector("#Foundation_Elemental_1_tabs > tbody > tr > td:nth-child(1)");
+        let titleSpacer1 = document.querySelector("#Foundation_Elemental_1_tabs > tbody > tr > td:nth-child(3)");
+        let titleSpacer2 = document.querySelector("#Foundation_Elemental_1_tabs > tbody > tr > td:nth-child(5)");
+        let titleSpacer3 = document.querySelector("#Foundation_Elemental_1_tabs > tbody > tr > td:nth-child(7)");
+        if (titleSpacer0 && titleSpacer1 && titleSpacer2 && titleSpacer3)
+        {
+            titleSpacer0.style.border = '';
+            titleSpacer1.style.border = '';
+            titleSpacer2.style.border = '';
+            titleSpacer3.style.border = '';
+        }
+        let bottomDiv = document.querySelector("body > div > div:nth-child(6)");
+        if (bottomDiv)
+        {
+            bottomDiv.style.backgroundColor = 'grey';
+            bottomDiv.style.border = '';
+        }
+    }
+    else
+    {
+        content.style.backgroundColor = 'slategrey';
+    }
     let gameMessageRead = document.getElementById("Foundation_Elemental_" + gameVersion + "_gameMessageRead");
     let playerNotes = document.getElementById("Foundation_Elemental_" + gameVersion + "_playerNotes");
     let gameMessageWrite = document.getElementById("Foundation_Elemental_" + gameVersion + "_gameMessageWrite");
     gameMessageRead.style.backgroundColor = 'lightgrey';
     playerNotes.style.backgroundColor = 'lightgrey';
     gameMessageWrite.style.backgroundColor = 'lightgrey';
-    bottomDiv.style.backgroundColor = 'grey';
-    bottomDiv.style.border = '';
 }
 
 
-function applyLightMode(content, bottomDiv)
+function applyLightMode(content)
 {
     document.body.style.backgroundColor = '';
-    let pageElements = [
-        content,
-        document.getElementById("Foundation_Elemental_1_title_0"),
-        document.getElementById("Foundation_Elemental_1_title_1"),
-        document.getElementById("Foundation_Elemental_1_title_2"),
-        document.querySelector("#Foundation_Elemental_1_tabs > tbody > tr > td:nth-child(1)"),
-        document.querySelector("#Foundation_Elemental_1_tabs > tbody > tr > td:nth-child(3)"),
-        document.querySelector("#Foundation_Elemental_1_tabs > tbody > tr > td:nth-child(5)"),
-        document.querySelector("#Foundation_Elemental_1_tabs > tbody > tr > td:nth-child(7)"),
-        document.getElementById("Foundation_Elemental_" + gameVersion + "_gameMessageRead"),
-        document.getElementById("Foundation_Elemental_" + gameVersion + "_playerNotes"),
-        document.getElementById("Foundation_Elemental_" + gameVersion + "_gameMessageWrite"),
-        bottomDiv
-    ]
+    const thisGame = GamesByEmail.findFirstGame();
+    let pageElements = null;
+    if (thisGame.previewing)
+    {
+        pageElements = [
+            content,
+            document.getElementById("Foundation_Elemental_1_title_0"),
+            document.getElementById("Foundation_Elemental_1_title_1"),
+            document.getElementById("Foundation_Elemental_1_title_2"),
+            document.querySelector("#Foundation_Elemental_1_tabs > tbody > tr > td:nth-child(1)"),
+            document.querySelector("#Foundation_Elemental_1_tabs > tbody > tr > td:nth-child(3)"),
+            document.querySelector("#Foundation_Elemental_1_tabs > tbody > tr > td:nth-child(5)"),
+            document.querySelector("#Foundation_Elemental_1_tabs > tbody > tr > td:nth-child(7)"),
+            document.getElementById("Foundation_Elemental_" + gameVersion + "_gameMessageRead"),
+            document.getElementById("Foundation_Elemental_" + gameVersion + "_playerNotes"),
+            document.getElementById("Foundation_Elemental_" + gameVersion + "_gameMessageWrite"),
+            document.querySelector("body > div > div:nth-child(6)")
+        ]
+    }
+    else
+    {
+        pageElements = [
+            document.getElementById("Foundation_Elemental_" + gameVersion + "_gameMessageRead"),
+            document.getElementById("Foundation_Elemental_" + gameVersion + "_playerNotes"),
+            document.getElementById("Foundation_Elemental_" + gameVersion + "_gameMessageWrite")
+        ]
+    }
     for (let index = 0; index < pageElements.length; index++)
-    {   
-        for (let property in pageElements[index].style)
+    {
+        if (pageElements[index] && window.cacheElements[index])
         {
-            pageElements[index].style[property] = window.cache[index].style[property];
+            for (let property in pageElements[index].style)
+            {
+                pageElements[index].style[property] = window.cacheElements[index].style[property];
+            }
         }
     }
     window.cacheContentBackgroundColor = content.style.backgroundColor;
 }
 
+
+function hideEndTurnButtons()
+{
+    let endMovementButton = document.getElementById("Foundation_Elemental_" + gameVersion + "_endMyMovement");
+    if (endMovementButton)
+    {
+        endMovementButton.disabled = true;
+        endMovementButton.style.visibility = "hidden";
+    }
+    let endTurnButton = document.getElementById("Foundation_Elemental_" + gameVersion + "_endMyTurn");
+    if (endTurnButton)
+    {
+        endTurnButton.disabled = true;
+        endTurnButton.style.visibility = "hidden";
+    }
+}
+
+
+function showEndTurnButtons()
+{
+    let endMovementButton = document.getElementById("Foundation_Elemental_" + gameVersion + "_endMyMovement");
+    if (endMovementButton)
+    {
+        endMovementButton.disabled = false;
+        endMovementButton.style.visibility = "visible";
+    }
+    let endTurnButton = document.getElementById("Foundation_Elemental_" + gameVersion + "_endMyTurn");
+    if (endTurnButton)
+    {
+        endTurnButton.disabled = false;
+        endTurnButton.style.visibility = "visible";
+    }
+}
+
+/// === Touch Support ===
 
 // Maps touch to mouse, includes custom click and right click / long touch.
 // For some actions, skip the mouse event and pass to the game handler.  
@@ -3664,35 +4231,38 @@ function getTouchHitBox()
     )
 }
 
-/// === Board Builder
+/// === Board Builder ===
 
-function addBoardBuilder()
+function addBoardBuilder(thisGame)
 {
-    const boardBuilderDiv = document.createElement('div');
-    boardBuilderDiv.style.display = 'flex';
-    boardBuilderDiv.style.flexDirection = 'column';
-    boardBuilderDiv.style.position = "absolute";
-    boardBuilderDiv.style.top = getBoardBuilderTop();
-    boardBuilderDiv.style.left = getBoardBuilderLeft();
-    boardBuilderDiv.style.fontSize = "10px";
-    boardBuilderDiv.style.fontFamily = "Verdana";
-    boardBuilderDiv.innerText = "Board Builder";
-    document.body.appendChild(boardBuilderDiv);
-
-    window.isTerrainSelected = {};
-    const inputOptions = [
-        {value: 'Plains'},
-        {value: 'Grass'},
-        {value: 'Forest'},
-        {value: 'Mountain'},
-        {value: 'Water'}
-    ];
-    inputOptions.forEach(option => {
-        window.isTerrainSelected[option.value] = false;
-        const radioButtons = createRadioButton(option.value);
-        boardBuilderDiv.appendChild(radioButtons);
-    });
-    addBoardBuilderToggle();
+    if (thisGame.previewing)
+    {
+        const boardBuilderDiv = document.createElement('div');
+        boardBuilderDiv.style.display = 'flex';
+        boardBuilderDiv.style.flexDirection = 'column';
+        boardBuilderDiv.style.position = "absolute";
+        boardBuilderDiv.style.top = getBoardBuilderTop();
+        boardBuilderDiv.style.left = getBoardBuilderLeft();
+        boardBuilderDiv.style.fontSize = "10px";
+        boardBuilderDiv.style.fontFamily = "Verdana";
+        boardBuilderDiv.innerText = "Board Builder";
+        document.body.appendChild(boardBuilderDiv);
+    
+        window.isTerrainSelected = {};
+        const inputOptions = [
+            {value: 'Plains'},
+            {value: 'Grass'},
+            {value: 'Forest'},
+            {value: 'Mountain'},
+            {value: 'Water'}
+        ];
+        inputOptions.forEach(option => {
+            window.isTerrainSelected[option.value] = false;
+            const radioButtons = createRadioButton(option.value);
+            boardBuilderDiv.appendChild(radioButtons);
+        });
+        addBoardBuilderToggle();
+    }
 }
 
 
@@ -3735,15 +4305,18 @@ function addTerrainInputListener(radioButton)
 
 function getBoardBuilderTop()
 {
-    const playNotesOffset = 129;
-    return (window.scrollY + document.getElementById('Foundation_Elemental_' + gameVersion + '_playerNotes').getBoundingClientRect().bottom + playNotesOffset + 'px');
+    const playerNotesOffset = 144;
+    const playerNotesRect = document.getElementById('Foundation_Elemental_' + gameVersion + '_playerNotes').getBoundingClientRect();
+    return (window.scrollY + playerNotesRect.bottom + playerNotesOffset + 'px');
 }
 
 
 function getBoardBuilderLeft()
 {
     const playerNotesOffset = 28;
-    return (window.scrollX + document.getElementById('Foundation_Elemental_' + gameVersion + '_playerNotes').getBoundingClientRect().left + playerNotesOffset + 'px');
+    const playerNotesRect = document.getElementById('Foundation_Elemental_' + gameVersion + '_playerNotes').getBoundingClientRect();
+    const playerNotesMidwayX = (playerNotesRect.left + playerNotesRect.right) * 0.3;
+    return (window.scrollX + playerNotesMidwayX + playerNotesOffset + 'px');
 }
 
 
@@ -3769,34 +4342,35 @@ function addBoardBuilderToggle()
 
 function getBoardBuilderToggleTop()
 {
-    const boardBuilderTop = 129;
-    const toggleOffset = -2;
-    return (window.scrollY + document.getElementById('Foundation_Elemental_' + gameVersion + '_playerNotes').getBoundingClientRect().bottom + boardBuilderTop + toggleOffset + 'px');
+    const boardBuilderTop = 142;
+    const playerNotesRect = document.getElementById('Foundation_Elemental_' + gameVersion + '_playerNotes').getBoundingClientRect();
+    return (window.scrollY + playerNotesRect.bottom + boardBuilderTop + 'px');
 }
 
 
 function getBoardBuilderToggleLeft()
 {
-    const boardBuilderLeft = 28;
-    const toggleOffset = 72;
-    return (window.scrollX + document.getElementById('Foundation_Elemental_' + gameVersion + '_playerNotes').getBoundingClientRect().left + boardBuilderLeft + toggleOffset + 'px');
+    const boardBuilderLeft = 100;
+    const playerNotesRect = document.getElementById('Foundation_Elemental_' + gameVersion + '_playerNotes').getBoundingClientRect();
+    const playerNotesMidwayX = (playerNotesRect.left + playerNotesRect.right) * 0.3;
+    return (window.scrollX + playerNotesMidwayX + boardBuilderLeft + 'px');
 }
 
 
 function getBoardBuilderToggleLabelTop()
 {
-    const boardBuilderTop = 122;
-    const toggleOffset = 62;
-    return (window.scrollY + document.getElementById('Foundation_Elemental_' + gameVersion + '_playerNotes').getBoundingClientRect().top + boardBuilderTop + toggleOffset + 'px');
+    const boardBuilderTop = 147;
+    const playerNotesRect = document.getElementById('Foundation_Elemental_' + gameVersion + '_playerNotes').getBoundingClientRect();
+    return (window.scrollY + playerNotesRect.bottom + boardBuilderTop + 'px');
 }
 
 
 function getBoardBuilderToggleLabelLeft()
 {
-    const boardBuilderLeft = 28;
-    const toggleOffset = 92;
-    return (window.scrollX + document.getElementById('Foundation_Elemental_' + gameVersion + '_playerNotes').getBoundingClientRect().left + boardBuilderLeft + toggleOffset + 'px');
-
+    const boardBuilderLeft = 120;
+    const playerNotesRect = document.getElementById('Foundation_Elemental_' + gameVersion + '_playerNotes').getBoundingClientRect();
+    const playerNotesMidwayX = (playerNotesRect.left + playerNotesRect.right) * 0.3;
+    return (window.scrollX + playerNotesMidwayX + boardBuilderLeft + 'px');
 }
 
 
@@ -3815,15 +4389,17 @@ function boardBuilderToggleMouseClick(event, toggle)
         document.addEventListener('mouseup', boardBuilderMouseUp);
         console.log("Board Builder: On");
         thisGame.maybeHideOverlay();
-        thisGame.playOptions.mapCustomizationData = "";
-        setPiecesPendingValue(thisGame, "p");
+        if (thisGame.playOptions.mapCustomizationData.length > 0)
+        {
+            thisGame.customizeMapDoAll(true);
+        }
         maybeSelectRadioButton();
         setTimeout(function(){}, 1)
         {
-            const title = document.getElementById("Foundation_Elemental_7_gameState");            
+            const title = document.getElementById("Foundation_Elemental_" + gameVersion + "_gameState");            
             title.innerText = "Board Builder";
             title.style.backgroundColor = "darkseagreen"
-            const content = document.getElementById("Foundation_Elemental_1_content");
+            const content = getDocumentContent();
             window.cacheContentBackgroundColor = content.style.backgroundColor;
             content.style.backgroundColor = "seagreen";
             content.style.cursor = "cell";
@@ -3834,17 +4410,17 @@ function boardBuilderToggleMouseClick(event, toggle)
                     piece.setBorder(false);  
                 }
             } 
-            const prompt = document.getElementById("Foundation_Elemental_7_gamePrompts");
+            const prompt = document.getElementById("Foundation_Elemental_" + gameVersion + "_gamePrompts");
             prompt.innerText = "Game is paused. Customize terrain on any hex, then switch off the Board Builder to resume play.";
         }
     }
     else
     {
         thisGame.movePhase = window.cacheMovePhase;
-        const content = document.getElementById("Foundation_Elemental_1_content");
+        const content = getDocumentContent();
         content.style.backgroundColor = window.cacheContentBackgroundColor;
         content.style.cursor = "auto";
-        const title = document.getElementById("Foundation_Elemental_7_gameState");  
+        const title = document.getElementById("Foundation_Elemental_" + gameVersion + "_gameState");  
         title.style.backgroundColor = "";
         document.removeEventListener('mousedown', boardBuilderMouseDown);
         document.removeEventListener('mousemove', boardBuilderMouseMove);
@@ -3854,6 +4430,13 @@ function boardBuilderToggleMouseClick(event, toggle)
         thisGame.removeExcessPieces(0, true);
         thisGame.removeExcessPieces(1, true);
     }
+}
+
+
+function getDocumentContent()
+{
+    const content = document.getElementById("Foundation_Elemental_1_content");
+    return content ? content : document.body;
 }
 
 

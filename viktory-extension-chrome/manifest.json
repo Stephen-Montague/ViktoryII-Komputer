@@ -1,6 +1,6 @@
 {
     "action": {},
-    "author": "stephen.w.montague@gmail.com",
+    "author": "stephen.montague.viktory@gmail.com",
     "background": {
         "service_worker": "worker.js"
     },
@@ -12,6 +12,6 @@
     "manifest_version":3,
     "name": "Viktory II Komputer",
     "permissions": ["scripting", "tabs"],
-    "host_permissions": ["http://gamesbyemail.com/Games/Viktory2*"],
-    "version": "2024.10.3"
+    "host_permissions": ["http://gamesbyemail.com/Games/Viktory2*", "http://gamesbyemail.com/Games/Play*"],
+    "version": "2024.11.20.0"
 }

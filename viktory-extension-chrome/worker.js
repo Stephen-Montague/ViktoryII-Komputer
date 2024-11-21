@@ -1,4 +1,9 @@
-console.log("Hello world.")
+console.log("Hey, welcome. Just a note from the developer of the Viktory II Komputer. \n\
+If you've come to view the loading code, please click on 'Sources' above. \n\
+If you'd like to see game code, right-click on the game page and click 'Inspect' then find the Sources tab there. \n\
+If you'd like to see game code before anything loads, you can find the folder for this extension, something like... \n\
+C:\\Users\\[UserName]\\AppData\\Local\\Google\\Chrome\\User Data\\Default\\Extensions\\[ExtensionId]\\script.js \n\
+Have a good one.");
 
 chrome.action.onClicked.addListener(tab => 
     {
@@ -6,7 +11,7 @@ chrome.action.onClicked.addListener(tab =>
     }
 );
 
-chrome.tabs.onUpdated.addListener((tabId, _changeInfo, tab) => 
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => 
     {
         if (tab.url.includes("http://gamesbyemail.com/Games/Viktory2")) 
         { 
