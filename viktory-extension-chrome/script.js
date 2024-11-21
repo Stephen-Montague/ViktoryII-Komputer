@@ -313,8 +313,8 @@ function findAvailableLandUnits(thisGame, color)
 
 function orderFromFarthestToEnemy(thisGame, units, reverse)
 {
-    const enemyColor = !thisGame.perspectiveColor * 1;
-    let enemyArmies = getArmyUnits(thisGame, enemyColor);
+    const enemyColors = getEnemyColors(thisGame);
+    let enemyArmies = getArmyUnits(thisGame, enemyColors);
     if (!enemyArmies)
     {
         return;
@@ -337,6 +337,25 @@ function orderFromFarthestToEnemy(thisGame, units, reverse)
     {
         units.reverse();
     }
+}
+
+
+function getEnemyColors(thisGame)
+{
+    const colorCount = thisGame.numberOfDistinctPlayers;
+    if (colorCount === 2)
+    {
+        return [!thisGame.perspectiveColor * 1];
+    }
+    let enemyColors = [];
+    for (let color = 0; color < colorCount; color++) 
+    {
+        if (color !== thisGame.perspectiveColor)
+        {
+            enemyColors.push(color);
+        }
+    }
+    return enemyColors;
 }
 
 
@@ -858,7 +877,7 @@ function getMoveScore(thisGame, possibleMove, unit, isEarlyMover)
 
 function getCenterPieceBoardPoint(thisGame)
 {
-    const centerPieceIndex = Math.floor((thisGame.pieces.length / 2) - 1);
+    const centerPieceIndex = Math.floor((thisGame.pieces.length * 0.5) - 1);
     return thisGame.pieces[centerPieceIndex].boardPoint; 
 }
 
@@ -934,7 +953,7 @@ function getFrigateMoveScore(thisGame, piece, unit, enemyColor)
     else
     {
         // Unloaded frigates should support friendlies.
-        let friendlyArmyUnits = getArmyUnits(thisGame, thisGame.perspectiveColor);
+        let friendlyArmyUnits = getArmyUnits(thisGame, [thisGame.perspectiveColor]);
         if (friendlyArmyUnits)
         {
             const distance = getDistanceToNearestUnit(thisGame, friendlyArmyUnits, piece);
@@ -1113,7 +1132,8 @@ function removeImaginaryCargo(frigate)
 function guessArmyThreat(thisGame, piece, enemyColor)
 {
     let threat = {count: 0, hasInfantry: false, hasCavalry : false, hasArtillery: false};
-    const enemyArmyUnits = getArmyUnits(thisGame, enemyColor);
+    const enemyColors = getEnemyColors(thisGame);
+    let enemyArmyUnits = getArmyUnits(thisGame, enemyColors);
     if (!enemyArmyUnits)
     {
         return threat;
@@ -1886,9 +1906,9 @@ function getBestBuildable(thisGame)
             return terrainPoint;
         }
     }
-    // Default (no new terrain): choose roughly midway to front lines.
+    // Default (no new terrain): roughly choose midway forward to the front lines.
     // If default already has a town, try to reinforce a central point, then build up wings before the tail.
-    const defaultPoint = buildablePoints[Math.floor(buildablePoints.length * 0.5)];
+    const defaultPoint = buildablePoints[Math.floor(buildablePoints.length * 0.75)];
     return (bestCentralPoint && thisGame.pieces.findAtPoint(defaultPoint).hasTown(thisGame.perspectiveColor)) ? 
         bestCentralPoint : buildWingsBeforeTail(thisGame, buildablePoints, defaultPoint);
 }
@@ -1906,7 +1926,7 @@ function getStrongPointCloseToCenter(thisGame, buildablePoints)
     {
         const manhattanDistance = thisGame.distanceBewteenPoints(centerPoint, buildablePoints[index]);
         const isExactCenter = manhattanDistance === 0;
-        if (isExactCenter)
+        if (isSmallBoard && isExactCenter)
         {
             // If the exact center is strong (a rare case), take it.
             if (isCenterStrong(thisGame))
@@ -1922,7 +1942,7 @@ function getStrongPointCloseToCenter(thisGame, buildablePoints)
             }
         }
         // Look for Red's primary targets.
-        if (isPlayingRed)
+        if (isSmallBoard && isPlayingRed)
         {
             if (isCenterTownRed)
             {
@@ -2037,23 +2057,26 @@ function isWedgeHexAvailable(thisGame, buildablePoints, index)
 // Of the original ~5 hexes, build flanks before back-center.
 function buildWingsBeforeTail(thisGame, buildablePoints, strongPoint)
 {
-    const possibleTailIndices = [9, 15, 45, 51];
-    const tailIndex = possibleTailIndices.indexOf(thisGame.pieces.findAtPoint(strongPoint).index);
-    if (tailIndex > -1)
+    if (isSmallBoard)
     {
-        const wingIndices = tailIndex === 9 ? [7, 24] : [38, 53];
-        let wingPoints = []; 
-        for (const wingIndex of wingIndices)
+        const possibleTailIndices = [9, 15, 45, 51];
+        const tailIndex = possibleTailIndices.indexOf(thisGame.pieces.findAtPoint(strongPoint).index);
+        if (tailIndex > -1)
         {
-            wingPoints.push(thisGame.boardPointFromValueIndex(wingIndex));
-        }
-        if (buildablePoints.includes(wingPoints[0]))
-        {
-            return wingPoints[0];
-        }
-        if (buildablePoints.includes(wingPoints[1]))
-        {
-            return wingPoints[1];
+            const wingIndices = tailIndex === 9 ? [7, 24] : [38, 53];
+            let wingPoints = []; 
+            for (const wingIndex of wingIndices)
+            {
+                wingPoints.push(thisGame.boardPointFromValueIndex(wingIndex));
+            }
+            if (buildablePoints.includes(wingPoints[0]))
+            {
+                return wingPoints[0];
+            }
+            if (buildablePoints.includes(wingPoints[1]))
+            {
+                return wingPoints[1];
+            }
         }
     }
     return strongPoint;
@@ -2111,33 +2134,37 @@ function getBestReservable(thisGame, movingUnitType, controlsCapital)
 
 function findFirstTurnReservable(thisGame, reservables)
 {
-    const topCenterPoint = thisGame.pieces[51].boardPoint;
-    let townPoint = null;
-    for (const reservable of reservables)
+    const topCenterIndex = isSmallBoard ? 51 : thisGame.numberOfDistinctPlayers === 2 ? 79 : null;
+    if (topCenterIndex)
     {
-        if (reservable.equals(topCenterPoint) && !thisGame.pieces[51].hasCapital(thisGame.perspectiveColor))
+        const topCenterPoint =  thisGame.pieces[topCenterIndex].boardPoint;
+        let townPoint = null;
+        for (const reservable of reservables)
         {
-            townPoint = reservable;
-            break;
-        }
-    }
-    if (townPoint)
-    {
-        let adjacentIndecies = thisGame.pieces.findAtPoint(townPoint).getAdjacentIndecies(1);
-        for (const index of adjacentIndecies)
-        {
-            if (hasSmoothTerrain(thisGame, index))
+            if (reservable.equals(topCenterPoint) && !thisGame.pieces[topCenterIndex].hasCapital(thisGame.perspectiveColor))
             {
-                return townPoint;       
+                townPoint = reservable;
+                break;
             }
         }
-        const capital = thisGame.pieces.findCapitalPiece(thisGame.perspectiveColor);
-        adjacentIndecies = capital.getAdjacentIndecies(1);
-        for (const index of adjacentIndecies)
+        if (townPoint)
         {
-            if (hasSmoothTerrain(thisGame, index))
+            let adjacentIndecies = thisGame.pieces.findAtPoint(townPoint).getAdjacentIndecies(1);
+            for (const index of adjacentIndecies)
             {
-                return capital.boardPoint;
+                if (hasSmoothTerrain(thisGame, index))
+                {
+                    return townPoint;       
+                }
+            }
+            const capital = thisGame.pieces.findCapitalPiece(thisGame.perspectiveColor);
+            adjacentIndecies = capital.getAdjacentIndecies(1);
+            for (const index of adjacentIndecies)
+            {
+                if (hasSmoothTerrain(thisGame, index))
+                {
+                    return capital.boardPoint;
+                }
             }
         }
     }
@@ -2154,8 +2181,8 @@ function hasSmoothTerrain(thisGame, pieceIndex)
 function sortByClosestToEnemy(thisGame, points)
 {
     // Get enemy armies or towns.
-    const enemyColor = !thisGame.perspectiveColor * 1;
-    let enemyArmies = getArmyUnits(thisGame, enemyColor);
+    const enemyColors = getEnemyColors(thisGame);
+    let enemyArmies = getArmyUnits(thisGame, enemyColors);
     if (!enemyArmies)
     {
         enemyArmies = [getRandomItem(thisGame.pieces.getOpponentCivilizations(thisGame.perspectiveColor)).findCivilization(enemyColor)];
@@ -2228,11 +2255,11 @@ function maybeRecallTroops(thisGame)
 {
     if (thisGame.playOptions.redeployment)
     {
-        let armyUnits = getArmyUnits(thisGame, thisGame.perspectiveColor);
+        let armyUnits = getArmyUnits(thisGame, [thisGame.perspectiveColor]);
         if (armyUnits && armyUnits.length > 0)
         {
             counterGraveDanger(thisGame, armyUnits);
-            armyUnits = getArmyUnits(thisGame, thisGame.perspectiveColor);
+            armyUnits = getArmyUnits(thisGame, [thisGame.perspectiveColor]);
             counterThreats(thisGame, armyUnits);
         }
     }
@@ -2511,7 +2538,8 @@ function placeCapital(thisGame)
                     console.log("Water swap!");
                 }
                 // Maybe reorder hexes explored by capital to keep a fast path to the center.
-                if(pieceIndex === 7 || pieceIndex === 36)
+                const leftSideIndices = isSmallBoard ? [7, 36] : [9, 62];
+                if(leftSideIndices.includes(pieceIndex))
                 {
                     let hexOrder = thisGame.getMapCustomizationData();
                     thisGame.playOptions.mapCustomizationData = hexOrder.split('').reverse().join('');
@@ -2703,10 +2731,10 @@ function getNextCapitalPieceIndex(thisGame, pieceIndexChoices)
     {
         return null;
     }
+    const centralIndex = isSmallBoard ? 9 : 11; // First player initial center hex.
+    const enemyColor = 0; // First player color, Red.
     // Take the opposite side of the enemy, or if center, play random.
-    const centralIndex = isSmallBoard ? 9 : 11;
-    const enemyColor = !thisGame.perspectiveColor * 1;
-    if (isSmallBoard && thisGame.pieces[centralIndex].hasUnit(enemyColor, "C"))
+    if (thisGame.pieces[centralIndex].hasUnit(enemyColor, "C"))
     {
         return pieceIndexChoices.splice(getRandomIndexExclusive(pieceIndexChoices.length), 1);
     }
@@ -2733,7 +2761,8 @@ function decideInitialHexOrder(hexOrder, capitalPieceIndex)
     // Seeks to boost edge town support via land path between center and edge.
     // When capital is on the right, keeps possible water hexes toward the right.
     // Otherwise, keeps water hexes toward the left.
-    const hasRightSideCapital = (capitalPieceIndex === 24 || capitalPieceIndex === 53);
+    const hasRightSideCapital = isSmallBoard ? (capitalPieceIndex === 24 || capitalPieceIndex === 53) : 
+                                                (capitalPieceIndex === 28 || capitalPieceIndex === 81);
     const waterCount = terrainCount(hexOrder, "w");
     let initialHexOrder = [];
     switch (waterCount)
@@ -3227,19 +3256,19 @@ function hasArmy(piece, color)
 }
 
 
-function getArmyUnits(thisGame, color)
+function getArmyUnits(thisGame, colors)
 {
     let armies = [];
     for (const piece of thisGame.pieces)
     {
-        // Skip water and reserve pieces
-        if (piece.isWater() || piece.valueIndex === - 1)
+        const reserveIndex = -1;
+        if (piece.isWater() || piece.valueIndex === reserveIndex)
         {
             continue;
         }
         for (const unit of piece.units)
         {
-            if (unit.color === color && unit.isMilitary())
+            if (colors.includes(unit.color) && unit.isMilitary())
             {
                 armies.push(unit);
             }
