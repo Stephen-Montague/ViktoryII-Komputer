@@ -444,10 +444,12 @@ async function moveEachUnit(thisGame, movableUnits, intervalPeriod)
             }
         }
         // Get the next unit and decide if it may move.
-        const unit = movableUnits[getNextUnitIndex(movableUnits)];
+        const nextUnitIndex = getNextUnitIndex(thisGame, movableUnits);
+        const isClickable = ensureIsClickable(thisGame, movableUnits, nextUnitIndex);
+        const unit = movableUnits[nextUnitIndex];
         const firstMoveWave = 0;
         const finalMoveWave = 2;
-        const mayMove = decideMayMove(thisGame, unit, firstMoveWave, finalMoveWave);
+        const mayMove = decideMayMove(thisGame, unit, firstMoveWave, finalMoveWave, isClickable);
         if (mayMove)
         {
             const possibleMoves = unit.isFrigate() ? getFrigateMovables(unit) : unit.getMovables();
@@ -474,6 +476,7 @@ async function moveEachUnit(thisGame, movableUnits, intervalPeriod)
                                 !document.getElementById("Foundation_Elemental_" + gameVersion + "_endMyTurn"))
                             {
                                 window.isExploring = true;
+                                clearIntervalsAndTimers();
                                 if (normalPopup)
                                 {
                                     thisGame.overlayCommitOnClick();
@@ -495,9 +498,13 @@ async function moveEachUnit(thisGame, movableUnits, intervalPeriod)
                         // On the rare case the unit isn't ready, push it to the end for later.
                         else
                         {
-                            movableUnits.push(movableUnits.splice(window.movingUnitIndex, 1)[0]);
-                            unit.setHilite(false);
                             clearMovementFlags();
+                            movableUnits.push(movableUnits.splice(window.movingUnitIndex, 1)[0]);
+                            const isValidUnit = unit && unit.piece && thisGame.pieces[unit.piece.index].units[unit.index];
+                            if (isValidUnit)
+                            {
+                                unit.setHilite(false);
+                            }
                         }   
                     }, 256);
                 } // End if shouldAcceptMove
@@ -532,9 +539,45 @@ function clearMovementFlags()
 }
 
 
-function getNextUnitIndex(movableUnits)
+function getNextUnitIndex(thisGame, movableUnits)
 {
-    return window.movingUnitIndex < movableUnits.length ? window.movingUnitIndex : movableUnits.length - 1;
+    if (!movableUnits || movableUnits.length === 0)
+    {
+        return null;
+    }
+    let nextUnitIndex = window.movingUnitIndex < movableUnits.length ? window.movingUnitIndex : movableUnits.length - 1;
+    let movableUnit = movableUnits[nextUnitIndex];
+    while (isNotValidUnit(thisGame, movableUnit) && (nextUnitIndex + 1 < movableUnits.length))
+    {
+        nextUnitIndex++;
+        movableUnit = movableUnits[nextUnitIndex];
+    }
+    window.movingUnitIndex = nextUnitIndex;
+    return nextUnitIndex;
+}
+
+
+function ensureIsClickable(thisGame, movableUnits, nextUnitIndex)
+{
+    let movableUnit = movableUnits[nextUnitIndex];
+    if (isNotValidUnit(thisGame, movableUnit))
+    {
+        return false;
+    }
+    // If there's another movable unit of the same type and status in front, insert the other unit at the next unit index. 
+    let piece = movableUnit.piece;
+    for (const unit of piece.units)
+    {
+        if (unit.movementComplete || unit.index === movableUnit.index || !movableUnits.includes(unit))
+        {
+            continue;
+        }
+        if (unit.type === movableUnit.type && unit.retreatIndex === movableUnit.retreatIndex && unit.zIndex > movableUnit.zIndex)
+        {
+            movableUnits.splice(nextUnitIndex, 0, movableUnits.splice(movableUnits.indexOf(unit), 1)[0]);
+        }
+    }
+    return true;
 }
 
 
@@ -545,9 +588,9 @@ function shouldFavorOffense(thisGame, firstMoveWave, movingUnitsLength)
 }
 
 
-function decideMayMove(thisGame, unit, firstMoveWave, finalMoveWave)
+function decideMayMove(thisGame, unit, firstMoveWave, finalMoveWave, canClick)
 {
-    if (isNotValidUnit(thisGame, unit))
+    if (!canClick || isNotValidUnit(thisGame, unit))
     {
         window.isManeuveringToAttack = false;
         window.isBombarding = false;
@@ -596,21 +639,26 @@ function settleExploredTerrain(thisGame, unit)
         const newHexOrder = decideHexOrder(thisGame, hexTerrain, unit.piece.boardPoint);
         thisGame.playOptions.mapCustomizationData = newHexOrder;
     }
-    thisGame.customizeMapDoAll(true);
-    window.explorationId = setInterval(function(){
-        if (isDoneExploring(thisGame))
-        {  
-            clearInterval(window.explorationId);
-            window.isExploring = false;
-        } 
-        setTimeout(function(){
-            const invalidPiece = thisGame.pieces.findByBoardValue("l");
-            if (invalidPiece)
-            {
-               fixPiecesPendingValue(thisGame, invalidPiece)
-            }
-        }, 200)
-    }, 720);
+    setTimeout(function()
+    {
+        thisGame.customizeMapDoAll(true);
+        window.explorationId = setInterval(function()
+        {
+            if (isDoneExploring(thisGame))
+            {  
+                clearInterval(window.explorationId);
+                window.isExploring = false;
+                runKomputer(thisGame);
+            } 
+            setTimeout(function(){
+                const invalidPiece = thisGame.pieces.findByBoardValue("l");
+                if (invalidPiece)
+                {
+                   fixPiecesPendingValue(thisGame, invalidPiece)
+                }
+            }, 200)
+        }, 200);
+    }, 600);
 }
 
 
@@ -668,9 +716,11 @@ function decideHowToContinueMove(thisGame, movableUnits, unit, finalMoveWave)
     }
     else if (shouldBombard(thisGame, unit, finalMoveWave))
     {
-        window.isManeuveringToAttack = false; 
         window.isBombarding = true;
+        clearIntervalsAndTimers();
         unit.movementComplete = true;
+        unit.holding = false;
+        window.isManeuveringToAttack = false; 
         bombard(thisGame, unit, unit.getBombardables());
     }
     // Move the next unit next interval.
@@ -1287,14 +1337,14 @@ function decideMoveAcceptance(thisGame, unit, destinationIndex)
         {
             return true;
         }
-        // Cavalry may always join battles that don't have friendly cavalry or attack unguarded towns.
+        // Pinned defending cavalry will likely be allowed to join any battle that doesn't have friendly cavalry or to attack an unguarded town.
         const unguarded = destinationPiece.countOpponentMilitary(thisGame.perspectiveColor) === 0;
         if (unit.type === "c" && destinationPiece.hasBattle(thisGame.perspectiveColor, thisGame.player.team.rulerColor && !destinationPiece.hasCavalry(thisGame.perspectiveColor)) ||
             unit.isCavalry() && destinationPiece.hasOpponentTown(thisGame.perspectiveColor) && unguarded)
         {
-            return true;
+            return Math.random() < 0.8 ? true : false;
         }
-        // For last pinned defenders:
+        // Otherwise, for last pinned defenders:
         if (defenderCount === 1)
         {
             const attackingToBreakSiege = (destinationPiece.hasRollingOpponent(thisGame.perspectiveColor) && isAdjacent(thisGame, unit.piece.boardPoint, destinationPiece.boardPoint)) || window.isManeuveringToAttack === true;
@@ -1484,8 +1534,9 @@ function bombard(thisGame, unit, bombardablePoints)
                         thisGame.pieces[unit.piece.index].updateUnitDisplay()
                         setTimeout(function(){
                             thisGame.pieces[targetPiece.index].bombardOkClick(thisGame.player.team.color);
-                            console.log("Bombardment!");
                             window.isBombarding = false;
+                            console.log("Bombardment!");
+                            runKomputer(thisGame);
                         }, reviewDelay)
                     }, applyHitsDelay);
                 }, commitDelay);
@@ -1496,6 +1547,7 @@ function bombard(thisGame, unit, bombardablePoints)
                 unit.hasBombarded = true;
                 unit.noBombard = true;
                 window.isBombarding = false;
+                runKomputer(thisGame);
             }
         }, fireDelay);
     }, fireDelay)
@@ -1616,14 +1668,7 @@ function fightBattle(thisGame, battlePiece, isReserveBattle = false)
                             }
                             else
                             {
-                                // After battle, prevent further battles with a pennant.
-                                const piece = thisGame.pieces[battlePiece.index];
-                                if (piece.hasRollingOpponent(thisGame.perspectiveColor))
-                                {
-                                    const enemyColor = piece.units[0].color;
-                                    piece.addUnit(enemyColor,"p").placedThisTurn=true;
-                                    piece.updateUnitDisplay();
-                                }
+                                // After battle
                                 thisGame.update();
                                 window.hasBattleBegun = false;
                                 runKomputer(thisGame);
@@ -1764,6 +1809,7 @@ function placeReserveUnit(thisGame){
         if (document.getElementById("Foundation_Elemental_" + gameVersion + "_overlayCommit") &&
             !document.getElementById("Foundation_Elemental_" + gameVersion + "_endMyTurn"))
         {
+            clearIntervalsAndTimers();
             settleCivExploredTerrain(thisGame, destinationBoardPoint);
         }
     }
@@ -1787,7 +1833,8 @@ function settleCivExploredTerrain(thisGame, civBoardPoint)
 {
     window.isExploring = true;
     thisGame.overlayCommitOnClick();
-    setTimeout(function(){
+    setTimeout(function()
+    {
         const hexTerrain = thisGame.getMapCustomizationData();
         if (hexTerrain.length > 0)
         {
@@ -1815,8 +1862,14 @@ function settleCivExploredTerrain(thisGame, civBoardPoint)
                 setTimeout(function()
                 {
                     window.isExploring = false;
+                    runKomputer(thisGame);
                 }, 128);
-            }, 128);
+            }, 800);
+        }
+        else
+        {
+            window.isExploring = false;
+            runKomputer(thisGame);
         }
     }, 256);
 }
@@ -2293,13 +2346,16 @@ function sortByClosestToEnemy(thisGame, points)
 function fixPiecesPendingValue(thisGame, piecePendingValue)
 {
     let logData = new Array();
-    while (piecePendingValue) {
+    let runCount = 0;
+    const failsafe = 42;
+    while (piecePendingValue && runCount < failsafe) {
         const landHexValue = getRandomAvailableHexValue(thisGame);
         piecePendingValue.setValue(landHexValue);
         thisGame.maybeUndarkPiece(piecePendingValue);
         logData.push(piecePendingValue.index);
         logData.push(landHexValue);
         piecePendingValue = thisGame.pieces.findByBoardValue("l");
+        runCount++;
     }
     thisGame.clearMapCustomizationData();
     thisGame.pushMapCustomizationMove(piecePendingValue, logData, logData.length);
@@ -2348,9 +2404,12 @@ function maybeRecallTroops(thisGame)
 function counterGraveDanger(thisGame, armyUnits)
 {
     const usingCavalry = false;
+    const failsafe = 128;
+    let runCount = 0;
     let recallUnits = getPrioritizedRecallUnits(thisGame, armyUnits, usingCavalry);
     for (let unitIndex = 0; unitIndex < recallUnits.length; unitIndex++)
     {
+        runCount++;
         const unit = recallUnits[unitIndex];
         if (isLoneCivDefender(thisGame, unit) && hasThreat(thisGame, unit.piece))
         {
@@ -2376,9 +2435,12 @@ function counterGraveDanger(thisGame, armyUnits)
                     else
                     {
                         // Rare case: when units stack on a hex higher than 3 of one type, the higher units cannot be selected first.
-                        // Push these units to the end of the unit list and rerun the loop.
+                        // Push these units to the end of the unit list and maybe rerun the loop.
                         recallUnits.push(recallUnits.splice(unitIndex, 1)[0]);
-                        unitIndex--;
+                        if (runCount < failsafe)
+                        {
+                            unitIndex--;
+                        }
                         break;
                     }
                 }
@@ -2391,9 +2453,12 @@ function counterGraveDanger(thisGame, armyUnits)
 function counterThreats(thisGame, armyUnits)
 {
     const usingCavalry = true;
+    const failsafe = 256;
+    let runCountI = 0;
     let recallUnits = getPrioritizedRecallUnits(thisGame, armyUnits, usingCavalry);
-    for (let unitIndex = 0; unitIndex < recallUnits.length; unitIndex++)
+    for (let unitIndex = 0; unitIndex < recallUnits.length && runCountI < failsafe; unitIndex++)
     {
+        runCountI++;
         const unit = recallUnits[unitIndex];
         if ((isLoneCivDefender(thisGame, unit) || isSecondCivDefender(thisGame, unit)) && hasThreat(thisGame, unit.piece))
         {
@@ -2402,8 +2467,10 @@ function counterThreats(thisGame, armyUnits)
         const reservables = thisGame.pieces.getReservables(unit.color,unit.rulerColor,unit.type,thisGame.doesColorControlTheirCapital(unit.color));
         if (reservables && reservables.length > 0)
         {
-            for (let index = 0; index < reservables.length; index++)
+            let runCountJ = 0;
+            for (let index = 0; index < reservables.length && runCountJ < failsafe; index++)
             {
+                runCountJ++;
                 const reservablePoint = reservables[index];
                 const civPiece = thisGame.pieces.findAtPoint(reservablePoint);
                 const lastIndex = reservables.length - 1;
@@ -2427,9 +2494,12 @@ function counterThreats(thisGame, armyUnits)
                     else
                     {
                         // Rare case: when units stack on a hex higher than 3 of one type, the higher units cannot be selected first.
-                        // Push these units to the end of the unit list and rerun the loop.
+                        // Push these units to the end of the unit list and maybe rerun the loop.
                         recallUnits.push(recallUnits.splice(unitIndex, 1)[0]);
-                        unitIndex--;
+                        if (runCountI < failsafe)
+                        {
+                            unitIndex--;
+                        }
                         break;
                     }
                 }
@@ -2580,21 +2650,27 @@ function maybeRecallFrigatesToPort(thisGame)
                                 // A port under threat is a primary target.
                                 if (hasThreat(thisGame, possiblePort))
                                 {
+                                    let runCount = 0;
+                                    const failsafe = 256;
                                     do 
                                     {
                                         // Push the valid port-adjacent reservables. 
                                         primaryTargets.push(reservables[++i]);
-                                    } while (i+1 < reservables.length && !reservables[i+1].placeHolderOnly);
+                                        runCount++;
+                                    } while ((i+1 < reservables.length) && !reservables[i+1].placeHolderOnly && (runCount < failsafe));
                                     break;
                                 }
                                 // A port with friendly units is a secondary target.
                                 const hasFriendlies = possiblePort.units.length > 2;
                                 if (hasFriendlies)
                                 {
+                                    let runCount = 0;
+                                    const failsafe = 256;
                                     do
                                     {
                                         secondaryTargets.push(reservables[++i])
-                                    } while (i+1 < reservables.length && !reservables[i+1].placeHolderOnly);
+                                        runCount++;
+                                    } while ((i+1 < reservables.length) && !reservables[i+1].placeHolderOnly && (runCount < failsafe));
                                 }
                             }
                         }
@@ -2682,10 +2758,13 @@ function placeCapital(thisGame)
     const hasWater = (hexOrder.indexOf("w") > -1) ? true : false;
     if (hasWater)
     {
-        while (terrainCount(hexOrder, "w") > 2)
+        let runCount = 0;
+        const failsafe = 42;
+        while (terrainCount(hexOrder, "w") > 2 && runCount < failsafe)
         {
             thisGame.swapWaterForLand();
             hexOrder = thisGame.getMapCustomizationData();
+            runCount++;
         }
     }
     // Decide initial hex order.
@@ -2983,10 +3062,13 @@ function decideHexOrder(thisGame, hexTerrain, exploringUnitBoardPoint)
         return hexTerrain;
     }
     hexTerrainPieceIndices.push(hexIndex);
-    while (hexTerrainPieceIndices.length < hexTerrain.length) 
+    let runCount = 0;
+    const failsafe = 42;
+    while (hexTerrainPieceIndices.length < hexTerrain.length && runCount < failsafe) 
     {
         hexIndex = thisGame.boardVisibility.indexOf("1", hexIndex + 1);
         hexTerrainPieceIndices.push(hexIndex);
+        runCount++;
     }
     // After the first turn or on any large board, measure how close each hex is to facing the enemy. 
     if (thisGame.maxMoveNumber > 8 || isLargeBoard)
@@ -3020,7 +3102,9 @@ function decideHexOrder(thisGame, hexTerrain, exploringUnitBoardPoint)
             hexTerrains = hexTerrain.split('');
         }
         // Assign new order, which may be sparse until all elements are assigned.
-        while (hexTerrains.length > 0) {
+        let runCount = 0;
+        const failsafe = 42;
+        while (hexTerrains.length > 0 && runCount < failsafe) {
             // Find the array index of the farthest hex via max angle.
             let maxAngle = Number.MIN_VALUE;
             let maxAngleIndex = null;
@@ -3032,6 +3116,7 @@ function decideHexOrder(thisGame, hexTerrain, exploringUnitBoardPoint)
             }
             newOrder[maxAngleIndex] = hexTerrains.pop();
             angleFromEnemyToHexes[maxAngleIndex] = Number.MIN_VALUE;
+            runCount++;
         }
     }
     else
@@ -4764,8 +4849,8 @@ function boardBuilderMouseDown(event)
         return; 
     }
     maybeSelectRadioButton();
-    const xOffset = document.getElementById("Foundation_Elemental_" + gameVersion + "_pieces").getBoundingClientRect().left + window.scrollX; // 20
-    const yOffset = document.getElementById("Foundation_Elemental_" + gameVersion + "_pieces").getBoundingClientRect().top + window.scrollY; // 300
+    const xOffset = document.getElementById("Foundation_Elemental_" + gameVersion + "_pieces").getBoundingClientRect().left + window.scrollX; 
+    const yOffset = document.getElementById("Foundation_Elemental_" + gameVersion + "_pieces").getBoundingClientRect().top + window.scrollY; 
     const screenPoint = new Foundation.Point(event.pageX - xOffset, event.pageY - yOffset); 
     const thisGame = Foundation.$registry[gameVersion];
     boardPoint = thisGame.boardPointFromScreenPoint(screenPoint);   
