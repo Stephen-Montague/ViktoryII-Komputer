@@ -43,6 +43,7 @@ function setupExtension()
             addStopButton("Stop", stopKomputerClick);
             addDarkModeToggle();
             addBoardBuilder(thisGame);
+            addLocalMultiplayer(thisGame);
         }
         window.onerror = function() 
         {
@@ -956,7 +957,7 @@ function getEuclideanDistanceToPoint(pointA, pointB)
 
 function guessTravelCostToEnemy(thisGame, unit, pieceOrigin)
 {    
-    const maxDistance = 44;
+    const maxDistance = 64;
     let travelCost = maxDistance;
     let possibleUnit = pieceOrigin.addUnit(thisGame.perspectiveColor, unit.type);
     possibleUnit.movementAllowance = maxDistance;
@@ -978,7 +979,7 @@ function guessTravelCostToEnemy(thisGame, unit, pieceOrigin)
         const enemyColors = getEnemyColors(thisGame);
         const enemyColor = getRandomItem(enemyColors);
         const enemyCapital = thisGame.pieces.findCapitalPiece(enemyColor);
-        return thisGame.distanceBewteenPoints(pieceOrigin.boardPoint, enemyCapital.boardPoint);
+        travelCost = thisGame.distanceBewteenPoints(pieceOrigin.boardPoint, enemyCapital.boardPoint);
     }
     return travelCost;
 }
@@ -1725,7 +1726,7 @@ function applyHits(thisGame, pieceIndex, battleData, isBombarding = false)
 {
     const thisPiece = thisGame.pieces[pieceIndex];
     const attackerColor = thisGame.player.team.color;
-    const defenderColor = (attackerColor === 0) ? 1 : 0;
+    const defenderColor = thisGame.pieces[pieceIndex].getOpponentColor(thisGame.perspectiveColor);
     const attackerHitThreshold = thisGame.getHitThreshold(attackerColor);
     const defenderHitThreshold = thisGame.getHitThreshold(defenderColor);
     const attackerUnitList = thisPiece.getMilitaryUnitList(attackerColor);
@@ -2741,10 +2742,10 @@ function placeCapital(thisGame)
     const isFirstPlayer = thisGame.perspectiveColor === 0;
     const pieceIndexStandardChoices = getCommonInitialChoices(thisGame);
     let pieceIndex = isFirstPlayer ? getFirstCapitalPieceIndex(thisGame, [...pieceIndexStandardChoices]) : getNextCapitalPieceIndex(thisGame, [...pieceIndexStandardChoices]);
-    if (!pieceIndex)
+    if (pieceIndex === null)
     {
         pieceIndex = findRandomTargetPieceIndex(thisGame);
-        if (!pieceIndex)
+        if (pieceIndex === null)
         {
             window.isKomputerReady = true;
             resetKomputerButtonStyle();
@@ -2813,9 +2814,7 @@ function placeCapital(thisGame)
                             if (pieceIndexStandardChoices && pieceIndexStandardChoices.includes(pieceIndex))
                             {
                                 const centralIndex = pieceIndexStandardChoices[1];
-                                const centralScreenX = thisGame.pieces[centralIndex].$screenRect.x;
-                                const pieceScreenX = thisGame.pieces[pieceIndex].$screenRect.x;
-                                pieceIndex = (pieceScreenX === centralScreenX) ? getRandomItem(pieceIndexStandardChoices) : pieceIndexStandardChoices[1];
+                                pieceIndex = pieceIndex === centralIndex ? getRandomItem([pieceIndexStandardChoices[0], pieceIndexStandardChoices[2]]) : centralIndex;
                             }
                             else
                             {
@@ -2927,8 +2926,27 @@ function getCommonInitialChoices(thisGame)
         pieceIndexChoices.push(exploredHexIndex);
         exploredHexIndex = thisGame.boardVisibility.indexOf("1", exploredHexIndex + 1);
     }
-    pieceIndexChoices.sort(
-        function(a, b){ return ((thisGame.pieces[a].$screenRect.x < thisGame.pieces[b].$screenRect.x) ? -1 : 1) });
+    pieceIndexChoices.sort(function(a, b)
+    { 
+        if (thisGame.pieces[a].$screenRect.x < thisGame.pieces[b].$screenRect.x)
+        {
+            return -1;
+        }
+        if (thisGame.pieces[a].$screenRect.x === thisGame.pieces[b].$screenRect.x)
+        {
+            let mapCenterIndex = Math.floor(thisGame.pieces.length * 0.5) - 1;
+            let isOnMapLeftSide = thisGame.pieces[pieceIndexChoices[0]].$screenRect.x < thisGame.pieces[mapCenterIndex].$screenRect.x;
+            if (thisGame.pieces[a].$screenRect.y < thisGame.pieces[b].$screenRect.y)
+            {
+                if (isOnMapLeftSide)
+                {
+                    return 1;
+                }
+                return -1;
+            }
+        }
+        return 1;
+    });
     pieceIndexChoices.splice(1, 1);
     pieceIndexChoices.splice(2, 1);
     return pieceIndexChoices;
@@ -4110,7 +4128,7 @@ function addDarkModeToggle()
         maybeStylePage(this.checked);
     });
 	let style = {position: 'absolute', top: getDarkModeToggleTop(), left:'128px', 'z-index': '9999'};
-	toggleStyle = toggle.style;
+	let toggleStyle = toggle.style;
 	Object.keys(style).forEach(key => toggleStyle[key] = style[key]);
     document.body.appendChild(toggle);
     // Toggle Label
@@ -4239,6 +4257,26 @@ function resetButtonPositions()
     darkModeToggle.style.top = getDarkModeToggleTop();
     let darkModeLabel = document.getElementById("DarkModeLabel");
     darkModeLabel.style.top = getDarkModeToggleLabelTop();
+    let boardBuilder = document.getElementById("BoardBuilder");
+    let boardBuilderToggle = document.getElementById("BoardBuilderToggle");
+    if (boardBuilder && boardBuilderToggle)
+    {
+        boardBuilder.style.top = getBoardBuilderTop();
+        boardBuilder.style.left = getBoardBuilderLeft();
+        boardBuilderToggle.style.top = getBoardBuilderToggleTop();
+        boardBuilderToggle.style.left = getBoardBuilderToggleLeft();
+        if (boardBuilderToggle.labels.length)
+        {
+            boardBuilderToggle.labels[0].style.top = getBoardBuilderToggleLabelTop();
+            boardBuilderToggle.labels[0].style.left = getBoardBuilderToggleLabelLeft();
+        }
+    }
+    let multiplayerForm = document.getElementById("MultiplayerForm");
+    if (multiplayerForm)
+    {
+        multiplayerForm.style.top = getMultiplayerFormTop();
+        multiplayerForm.style.left = getMultiplayerFormLeft();
+    }
 }
 
 
@@ -4640,6 +4678,7 @@ function addBoardBuilder(thisGame)
     if (thisGame.previewing)
     {
         const boardBuilderDiv = document.createElement('div');
+        boardBuilderDiv.id = "BoardBuilder";
         boardBuilderDiv.style.display = 'flex';
         boardBuilderDiv.style.flexDirection = 'column';
         boardBuilderDiv.style.position = "absolute";
@@ -4660,7 +4699,7 @@ function addBoardBuilder(thisGame)
         ];
         inputOptions.forEach(option => {
             window.isTerrainSelected[option.value] = false;
-            const radioButtons = createRadioButton(option.value);
+            const radioButtons = createRadioButton(option.value, addTerrainInputListener);
             boardBuilderDiv.appendChild(radioButtons);
         });
         addBoardBuilderToggle();
@@ -4668,7 +4707,7 @@ function addBoardBuilder(thisGame)
 }
 
 
-function createRadioButton(value, groupName = 'RadioGroup') {
+function createRadioButton(value, addListener, groupName = 'RadioGroup_') {
     const container = document.createElement('div');
     container.style.display = 'flex';
     container.style.alignItems = 'center';
@@ -4679,7 +4718,8 @@ function createRadioButton(value, groupName = 'RadioGroup') {
     radioButton.value = value;
     radioButton.id = groupName + value; 
     radioButton.style.marginRight = '6px';
-    addTerrainInputListener(radioButton);
+    addListener(radioButton);
+    //addTerrainInputListener(radioButton);
     const label = document.createElement('label');
     label.innerText = value;
     label.htmlFor = radioButton.id; 
@@ -4707,7 +4747,7 @@ function addTerrainInputListener(radioButton)
 
 function getBoardBuilderTop()
 {
-    const playerNotesOffset = 144;
+    const playerNotesOffset = 156;
     const playerNotesRect = document.getElementById('Foundation_Elemental_' + gameVersion + '_playerNotes').getBoundingClientRect();
     return (window.scrollY + playerNotesRect.bottom + playerNotesOffset + 'px');
 }
@@ -4715,7 +4755,7 @@ function getBoardBuilderTop()
 
 function getBoardBuilderLeft()
 {
-    const playerNotesOffset = 28;
+    const playerNotesOffset = 128;
     const playerNotesRect = document.getElementById('Foundation_Elemental_' + gameVersion + '_playerNotes').getBoundingClientRect();
     const playerNotesMidwayX = (playerNotesRect.left + playerNotesRect.right) * 0.3;
     return (window.scrollX + playerNotesMidwayX + playerNotesOffset + 'px');
@@ -4729,7 +4769,7 @@ function addBoardBuilderToggle()
     toggle.id = "BoardBuilderToggle";
     toggle.addEventListener('click', boardBuilderToggleMouseClick);
 	let style = {position: 'absolute', top: getBoardBuilderToggleTop(), left:getBoardBuilderToggleLeft(), 'z-index': '9999'};
-	toggleStyle = toggle.style;
+	let toggleStyle = toggle.style;
 	Object.keys(style).forEach(key => toggleStyle[key] = style[key]);
     document.body.appendChild(toggle);
     // Toggle Label
@@ -4744,7 +4784,7 @@ function addBoardBuilderToggle()
 
 function getBoardBuilderToggleTop()
 {
-    const boardBuilderTop = 142;
+    const boardBuilderTop = 154;
     const playerNotesRect = document.getElementById('Foundation_Elemental_' + gameVersion + '_playerNotes').getBoundingClientRect();
     return (window.scrollY + playerNotesRect.bottom + boardBuilderTop + 'px');
 }
@@ -4752,7 +4792,7 @@ function getBoardBuilderToggleTop()
 
 function getBoardBuilderToggleLeft()
 {
-    const boardBuilderLeft = 100;
+    const boardBuilderLeft = 200;
     const playerNotesRect = document.getElementById('Foundation_Elemental_' + gameVersion + '_playerNotes').getBoundingClientRect();
     const playerNotesMidwayX = (playerNotesRect.left + playerNotesRect.right) * 0.3;
     return (window.scrollX + playerNotesMidwayX + boardBuilderLeft + 'px');
@@ -4761,7 +4801,7 @@ function getBoardBuilderToggleLeft()
 
 function getBoardBuilderToggleLabelTop()
 {
-    const boardBuilderTop = 147;
+    const boardBuilderTop = 159;
     const playerNotesRect = document.getElementById('Foundation_Elemental_' + gameVersion + '_playerNotes').getBoundingClientRect();
     return (window.scrollY + playerNotesRect.bottom + boardBuilderTop + 'px');
 }
@@ -4769,7 +4809,7 @@ function getBoardBuilderToggleLabelTop()
 
 function getBoardBuilderToggleLabelLeft()
 {
-    const boardBuilderLeft = 120;
+    const boardBuilderLeft = 220;
     const playerNotesRect = document.getElementById('Foundation_Elemental_' + gameVersion + '_playerNotes').getBoundingClientRect();
     const playerNotesMidwayX = (playerNotesRect.left + playerNotesRect.right) * 0.3;
     return (window.scrollX + playerNotesMidwayX + boardBuilderLeft + 'px');
@@ -4795,7 +4835,7 @@ function boardBuilderToggleMouseClick(event, toggle)
         {
             thisGame.customizeMapDoAll(true);
         }
-        maybeSelectRadioButton();
+        maybeSelectDefaultTerrain();
         setTimeout(function(){}, 1)
         {
             const title = document.getElementById("Foundation_Elemental_" + gameVersion + "_gameState");            
@@ -4848,7 +4888,7 @@ function boardBuilderMouseDown(event)
     {
         return; 
     }
-    maybeSelectRadioButton();
+    maybeSelectDefaultTerrain();
     const xOffset = document.getElementById("Foundation_Elemental_" + gameVersion + "_pieces").getBoundingClientRect().left + window.scrollX; 
     const yOffset = document.getElementById("Foundation_Elemental_" + gameVersion + "_pieces").getBoundingClientRect().top + window.scrollY; 
     const screenPoint = new Foundation.Point(event.pageX - xOffset, event.pageY - yOffset); 
@@ -4886,7 +4926,7 @@ function boardBuilderMouseDown(event)
 }
 
 
-function maybeSelectRadioButton()
+function maybeSelectDefaultTerrain()
 {
     for (const terrain in window.isTerrainSelected)
     {
@@ -4895,7 +4935,7 @@ function maybeSelectRadioButton()
             return;
         }
     }        
-    let radioButton = document.getElementById("RadioGroupPlains");
+    let radioButton = document.getElementById("RadioGroup_Plains");
     if (radioButton)
     {
         radioButton.checked = true;
@@ -4947,3 +4987,177 @@ function enableBoardBuilder()
     }
 }
 
+/// === Local Multiplayer ===
+
+function addLocalMultiplayer(thisGame)
+{
+    if (thisGame.previewing)
+    {
+        const multiplayerForm = document.createElement('div');
+        multiplayerForm.id = "MultiplayerForm";
+        multiplayerForm.style.display = 'flex';
+        multiplayerForm.style.flexDirection = 'column';
+        multiplayerForm.style.position = "absolute";
+        multiplayerForm.style.top = getMultiplayerFormTop();
+        multiplayerForm.style.left = getMultiplayerFormLeft();
+        multiplayerForm.style.fontSize = "10px";
+        multiplayerForm.style.fontFamily = "Verdana";
+        multiplayerForm.innerText = "Komputer Multiplayer";
+        document.body.appendChild(multiplayerForm);
+        addMultiplayerRestartButton(thisGame, multiplayerForm);
+        window.isKomputerMultiplayerSelected = {};
+        const inputOptions = [
+            {value: '2 Player'},
+            {value: '3 Player'},
+        ];
+        inputOptions.forEach(option => {
+            window.isKomputerMultiplayerSelected[option.value] = false;
+            const radioButtons = createRadioButton(option.value, addMultiplayerInputListener);
+            multiplayerForm.appendChild(radioButtons);
+        });
+    }
+}
+
+
+function addMultiplayerInputListener(radioButton)
+{
+    radioButton.addEventListener('change', () => 
+        {
+            Object.keys(window.isKomputerMultiplayerSelected).forEach(key => { isKomputerMultiplayerSelected[key] = false; });
+            isKomputerMultiplayerSelected[radioButton.value] = true;
+            radioButton.checked = isKomputerMultiplayerSelected[radioButton.value] ? true : false; 
+            console.log("Pressed: " + radioButton.value);
+            let playerCount = radioButton.value[0] * 1;
+            let formIndex = Foundation.$registry.length - 1;
+            let playButton = document.getElementById("Foundation_Elemental_" + formIndex + "_PlayButton");
+            if (playButton)
+            {
+                setupNextGamePlayers(playerCount, formIndex);
+            }
+        }
+    )
+}
+
+
+function setupNextGamePlayers(playerCount, formIndex)
+{
+    Foundation.$registry[formIndex].numPlayers = playerCount;
+    while (Foundation.$registry[formIndex].players.length > playerCount)
+    {
+        Foundation.$registry[formIndex].players.shift();
+    }
+    switch(playerCount)
+    {
+        case 3:
+            if (Foundation.$registry[formIndex].players.length < playerCount)
+            {
+                Foundation.$registry[formIndex].players.unshift({title: 'Player 3', id: '3', mode: 3, rank: 0, playerId: 2});
+            }
+            let largeBoardToggle = document.getElementById("Foundation_Elemental_" + formIndex + "_info_bigBoard");
+            if (largeBoardToggle)
+            {
+                largeBoardToggle.checked = true;
+            }
+            break;
+        default:
+            break;
+    }
+}
+
+
+function getMultiplayerFormTop()
+{
+    const playerNotesOffset = 156;
+    const playerNotesRect = document.getElementById('Foundation_Elemental_' + gameVersion + '_playerNotes').getBoundingClientRect();
+    return (window.scrollY + playerNotesRect.bottom + playerNotesOffset + 'px');
+}
+
+
+function getMultiplayerFormLeft()
+{
+    const playerNotesOffset = 144;
+    const playerNotesRect = document.getElementById('Foundation_Elemental_' + gameVersion + '_playerNotes').getBoundingClientRect();
+    const playerNotesMidwayX = (playerNotesRect.left + playerNotesRect.right) * 0.4;
+    return (window.scrollX + playerNotesMidwayX + playerNotesOffset + 'px');
+}
+
+
+function addMultiplayerRestartButton(thisGame, form)
+{
+    let button = document.createElement("button");
+    button.setAttribute("type", "button");
+    button.id = "MultiplayerRestartButton";
+    button.innerText = "New Game";
+    button.style.fontSize = "10px";
+    button.style.fontFamily = "Verdana";
+    button.addEventListener('click', function(){ multiplayerRestartButtonMouseClick(thisGame) });
+    form.appendChild(button);
+}
+
+
+function multiplayerRestartButtonMouseClick(thisGame)
+{
+    let formIndex = Foundation.$registry.length - 1;
+    let playButton = document.getElementById("Foundation_Elemental_" + formIndex + "_PlayButton");
+    if (playButton)
+    {
+        for (let playerCount in window.isKomputerMultiplayerSelected)
+        {
+            if (window.isKomputerMultiplayerSelected[playerCount] === true)
+            {
+                playerCount = playerCount[0] * 1;
+                setupNextGamePlayers(playerCount, formIndex);
+                break;
+            }
+        }   
+        Foundation.$registry[formIndex].play();
+    }
+    else
+    {
+        if (!document.getElementById("Foundation_Elemental_" + gameVersion + "_resign"))
+        {
+            thisGame.sendMove();
+            setTimeout(function(){
+                if (document.getElementById("Foundation_Elemental_" + gameVersion + "_resign"))
+                {
+                    thisGame.resign();
+                    thisGame.startAnotherGame();
+                    maybeSelectDefaultPlayerCount();    
+                }
+                else
+                {
+                    button = document.getElementById("MultiplayerRestartButton");
+                    button.innerText = "Plz End Turn";
+                    setTimeout(function()
+                    {
+                        button.innerText = "New Game";
+                    }, 1600);
+                }
+            }, 200)
+        }
+        else
+        {
+            thisGame.resign();
+            thisGame.startAnotherGame();
+            maybeSelectDefaultPlayerCount();  
+        }    
+    }
+}
+
+
+function maybeSelectDefaultPlayerCount()
+{
+    for (const playerCount in window.isKomputerMultiplayerSelected)
+    {
+        if (window.isKomputerMultiplayerSelected[playerCount] === true)
+        {
+            return;
+        }
+    }        
+    let radioButton = document.getElementById("RadioGroup_2 Player");
+    if (radioButton)
+    {
+        radioButton.checked = true;
+        window.isKomputerMultiplayerSelected["2 Player"] = true;
+    }
+}
