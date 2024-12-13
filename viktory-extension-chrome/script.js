@@ -773,6 +773,7 @@ function getMoveScore(thisGame, possibleMove, unit, favorOffense)
 {
     const piece = thisGame.pieces.findAtXY(possibleMove.x, possibleMove.y);
     const enemyColor = piece.getOpponentColor(thisGame.perspectiveColor);
+    const primaryTargetColors = getPrimaryTargetColors(thisGame);
     if (unit.isFrigate())
     {
         return getFrigateMoveScore(thisGame, piece, unit, enemyColor);
@@ -841,6 +842,11 @@ function getMoveScore(thisGame, possibleMove, unit, favorOffense)
                     score += unit.type === "i" ? 0.2 : 0.4;
                 }
             }
+            const primaryTargetColors = getPrimaryTargetColors(thisGame);
+            if (!primaryTargetColors.includes(enemyColor))
+            {
+                score *= 0.6;
+            }
         }
         // Try to beseige / pin enemy cities and towns, on the safest terrain.
         else if ((hasAdjacentEnemyCivilization(thisGame, piece) && !piece.hasFrigate(thisGame.perspectiveColor)) || 
@@ -852,6 +858,23 @@ function getMoveScore(thisGame, possibleMove, unit, favorOffense)
             {
                 score -= 0.0625;
             }
+            // Focus on primary targets
+            const primaryTargetColors = getPrimaryTargetColors(thisGame);
+            const adjacentIndecies = piece.getAdjacentIndecies(1);
+            let isTargetPrimary = false;
+            for (const index of adjacentIndecies)
+            {
+                const adjacentPiece = thisGame.pieces[index];
+                if (adjacentPiece.hasOpponentCivilization(thisGame.perspectiveColor))
+                {
+                    let opponentColor = adjacentPiece.getOpponentColor(thisGame.perspectiveColor);
+                    if (primaryTargetColors.includes(opponentColor))
+                    {
+                        isTargetPrimary = true;
+                    }
+                } 
+            }
+            score *= isTargetPrimary? 1 : 0.6;
             // Try to never leave cavalry alone in the open next to an enemy civ.
             const remainingMoveAllowance = unit.movementAllowance - unit.spacesMoved;
             if (unit.isCavalry() && hasSmoothTerrain(thisGame, piece.index) && (piece.countMilitaryUnits(piece.units) == 0) &&
@@ -942,6 +965,36 @@ function getMoveScore(thisGame, possibleMove, unit, favorOffense)
 }
 
 
+function getPrimaryTargetColors(thisGame)
+{
+    let primaryTargetColors = [];
+    const enemyColors = getEnemyColors(thisGame);
+    if (enemyColors.length === 1)
+    {
+        return enemyColors;
+    }
+    const currentPlayerScore = thisGame.pieces.getScore(thisGame.perspectiveColor);
+    let totalScore = currentPlayerScore;
+    let enemyScores = [];
+    for (const enemyColor of enemyColors)
+    {
+        const enemyScore = thisGame.pieces.getScore(enemyColor)
+        enemyScores.push(enemyScore);
+        totalScore += enemyScore;
+    }
+    for (let i = 0; i < enemyScores.length; i++)
+    {
+        const enemyScore = enemyScores[i];
+        if (enemyScore > (0.4 * totalScore))
+        {
+            primaryTargetColors.push(enemyColors[i]);
+        }
+    }
+    const hasPrimaryTarget = primaryTargetColors.length > 0;
+    return hasPrimaryTarget ? primaryTargetColors : enemyColors;
+}
+
+
 function getCenterPieceBoardPoint(thisGame)
 {
     const centerPieceIndex = Math.floor((thisGame.pieces.length * 0.5) - 1);
@@ -988,6 +1041,7 @@ function guessTravelCostToEnemy(thisGame, unit, pieceOrigin)
 function getFrigateMoveScore(thisGame, piece, unit, enemyColor)
 {
     let score = 0;
+    const primaryTargetColors = getPrimaryTargetColors(thisGame);
     const hasEnemyFrigate = piece.hasFrigate(enemyColor);
     if (unit.hasUnloadables())
     {
@@ -996,7 +1050,7 @@ function getFrigateMoveScore(thisGame, piece, unit, enemyColor)
         let coastalCivs = [];
         for (const civPiece of enemyCivs)
         {
-            if ((unit.piece.isPerimeter() && hasAdjacentDeepWater(thisGame, civPiece)) || hasAdjacentAccessibleInlandSea(thisGame, civPiece, unit))
+            if (isAccessibleNow(civPiece, unit, true) || (hasAdjacentDeepWater(thisGame, unit.piece)  && hasAdjacentDeepWater(thisGame, civPiece)))
             {
                 coastalCivs.push(civPiece);
             }
@@ -1008,17 +1062,14 @@ function getFrigateMoveScore(thisGame, piece, unit, enemyColor)
         const defenderCount = piece.countOpponentMilitary(thisGame.perspectiveColor); 
         const defensiveScalar = defenderCount > 0 ? 1 - (0.03125 * defenderCount) : 1; 
         const hitTarget = distance === 0;
-        score += hitTarget ? 0.125 * defensiveScalar : 0;
-        score -= hitTarget && hasAdjacentEnemyArmy(thisGame, piece) ? 0.01125 : 0;
+        score += hitTarget && primaryTargetColors.includes(enemyColor) ? 0.125 * defensiveScalar : 0;
+        score -= hitTarget && (hasAdjacentEnemyArmy(thisGame, piece) || hasAdjacentEnemyFrigate(thisGame, piece)) ? 0.01125 : 0;
+        score -= hasEnemyFrigate ? 0.03125 : 0;
         score += piece.hasBattle(thisGame.perspectiveColor, thisGame.player.team.rulerColor) ? 
             isAdjacent(thisGame, unit.piece.boardPoint, piece.boardPoint) ? 0.125 : 0.09375 : 0;
         score += piece.hasOpponentTown(thisGame.perspectiveColor) && !piece.isMountain() ? 0.0625 : 0;
         score += piece.hasOpponentCivilization(thisGame.perspectiveColor) ? 0.03125 : 
                 piece.isMountain() ? 0.01875 : piece.isForest() ? 0.01125 : 0;
-        if (hasEnemyFrigate || hasAdjacentEnemyFrigate(thisGame, piece))
-        {
-            score -= 0.03125;
-        }
     }
     else
     {
@@ -1040,7 +1091,7 @@ function getFrigateMoveScore(thisGame, piece, unit, enemyColor)
         score += hasAdjacentEnemyArmy(thisGame, piece) ? 0.03125 : 0;
     }
     // Add small weight for other considerations.
-    score += hasAdjacentBattle(thisGame, piece) && hasAdjacentEnemyArmy(thisGame, piece) ? 0.03125 : 0;
+    score += hasAdjacentBattle(thisGame, piece) ? 0.03125 : hasAdjacentEnemyArmy(thisGame, piece) ? 0.01125: 0;
     // Clamp to [0,2]. Values should hit between about [0,1], but an overflow capacity may be useful.
     score = score < 0 ? 0 : score > 2 ? 2 : score;
     return score;
@@ -1865,14 +1916,14 @@ function settleCivExploredTerrain(thisGame, civBoardPoint)
                     window.isExploring = false;
                     runKomputer(thisGame);
                 }, 128);
-            }, 800);
+            }, 600);
         }
         else
         {
             window.isExploring = false;
             runKomputer(thisGame);
         }
-    }, 256);
+    }, 128);
 }
 
 
@@ -3429,18 +3480,6 @@ function hasAdjacentInlandSea(thisGame, piece)
 }
 
 
-function hasAdjacentAccessibleInlandSea(thisGame, piece, unit)
-{
-    let adjacentPiece;
-    return ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y)) != null && adjacentPiece.boardValue === "w" && isAccessibleNow(adjacentPiece, unit)) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y)) != null && adjacentPiece.boardValue === "w" && isAccessibleNow(adjacentPiece, unit)) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y-1)) != null && adjacentPiece.boardValue === "w" && isAccessibleNow(adjacentPiece, unit)) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y+1)) != null && adjacentPiece.boardValue === "w" && isAccessibleNow(adjacentPiece, unit)) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y-1)) != null && adjacentPiece.boardValue === "w" && isAccessibleNow(adjacentPiece, unit)) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y+1)) != null && adjacentPiece.boardValue === "w" && isAccessibleNow(adjacentPiece, unit));
-}
-
-
 function countAdjacentInlandSea(thisGame, piece)
 {
     let count = 0;
@@ -3484,12 +3523,12 @@ function countAdjacentInlandSea(thisGame, piece)
 }
 
 
-function isAccessibleNow(piece, unit, viaImaginaryCargo = false)
+function isAccessibleNow(piece, unit, viaCargo = false)
 {
     if (piece && unit)
     {
         let unitMovablePoints = [];
-        if (unit.isFrigate() && viaImaginaryCargo)
+        if (unit.isFrigate() && viaCargo)
         {
             const hasCargo = unit.cargo.length > 0;
             maybeAddImaginaryCargo(unit, hasCargo);
@@ -5082,23 +5121,11 @@ function getMultiplayerFormLeft()
 }
 
 
-function addMultiplayerRestartButton(thisGame, form)
-{
-    let button = document.createElement("button");
-    button.setAttribute("type", "button");
-    button.id = "MultiplayerRestartButton";
-    button.innerText = "New Game";
-    button.style.fontSize = "10px";
-    button.style.fontFamily = "Verdana";
-    button.addEventListener('click', function(){ multiplayerRestartButtonMouseClick(thisGame) });
-    form.appendChild(button);
-}
-
-
 function multiplayerRestartButtonMouseClick(thisGame)
 {
-    let formIndex = Foundation.$registry.length - 1;
-    let playButton = document.getElementById("Foundation_Elemental_" + formIndex + "_PlayButton");
+    const formIndex = Foundation.$registry.length - 1;
+    const playButton = document.getElementById("Foundation_Elemental_" + formIndex + "_PlayButton");
+    const startAnotherButton = document.getElementById("Foundation_Elemental_" + gameVersion + "_startAnotherGame");
     if (playButton)
     {
         for (let playerCount in window.isKomputerMultiplayerSelected)
@@ -5111,6 +5138,11 @@ function multiplayerRestartButtonMouseClick(thisGame)
             }
         }   
         Foundation.$registry[formIndex].play();
+    }
+    else if (startAnotherButton)
+    {
+        thisGame.startAnotherGame();
+        maybeSelectDefaultPlayerCount();  
     }
     else
     {
@@ -5161,3 +5193,17 @@ function maybeSelectDefaultPlayerCount()
         window.isKomputerMultiplayerSelected["2 Player"] = true;
     }
 }
+
+
+function addMultiplayerRestartButton(thisGame, form)
+{
+    let button = document.createElement("button");
+    button.setAttribute("type", "button");
+    button.id = "MultiplayerRestartButton";
+    button.innerText = "New Game";
+    button.style.fontSize = "10px";
+    button.style.fontFamily = "Verdana";
+    button.addEventListener('click', function(){ multiplayerRestartButtonMouseClick(thisGame) });
+    form.appendChild(button);
+}
+
