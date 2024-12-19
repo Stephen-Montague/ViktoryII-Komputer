@@ -13,5 +13,5 @@
     "name": "Viktory II Komputer",
     "permissions": ["scripting", "tabs"],
     "host_permissions": ["http://gamesbyemail.com/Games/Viktory2*", "http://gamesbyemail.com/Games/Play*"],
-    "version": "2024.12.13.1"
+    "version": "2024.12.19.2"
 }

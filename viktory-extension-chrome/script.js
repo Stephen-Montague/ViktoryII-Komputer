@@ -31,6 +31,7 @@ function setupExtension()
     verifyElementalIds(thisGame); 
     if (isGameReady(thisGame))
     {
+        patchControls();
         addTouchSupport();
         patchGamePrototype();
         patchPiecePrototype();
@@ -652,11 +653,7 @@ function settleExploredTerrain(thisGame, unit)
                 runKomputer(thisGame);
             } 
             setTimeout(function(){
-                const invalidPiece = thisGame.pieces.findByBoardValue("l");
-                if (invalidPiece)
-                {
-                   fixPiecesPendingValue(thisGame, invalidPiece)
-                }
+                ensureValidBoard(thisGame);
             }, 200)
         }, 200);
     }, 600);
@@ -776,7 +773,7 @@ function getMoveScore(thisGame, possibleMove, unit, favorOffense)
     const primaryTargetColors = getPrimaryTargetColors(thisGame);
     if (unit.isFrigate())
     {
-        return getFrigateMoveScore(thisGame, piece, unit, enemyColor);
+        return getFrigateMoveScore(thisGame, piece, unit, enemyColor, primaryTargetColors);
     }
     else
     {
@@ -842,7 +839,6 @@ function getMoveScore(thisGame, possibleMove, unit, favorOffense)
                     score += unit.type === "i" ? 0.2 : 0.4;
                 }
             }
-            const primaryTargetColors = getPrimaryTargetColors(thisGame);
             if (!primaryTargetColors.includes(enemyColor))
             {
                 score *= 0.6;
@@ -859,7 +855,6 @@ function getMoveScore(thisGame, possibleMove, unit, favorOffense)
                 score -= 0.0625;
             }
             // Focus on primary targets
-            const primaryTargetColors = getPrimaryTargetColors(thisGame);
             const adjacentIndecies = piece.getAdjacentIndecies(1);
             let isTargetPrimary = false;
             for (const index of adjacentIndecies)
@@ -1038,10 +1033,9 @@ function guessTravelCostToEnemy(thisGame, unit, pieceOrigin)
 }
 
 
-function getFrigateMoveScore(thisGame, piece, unit, enemyColor)
+function getFrigateMoveScore(thisGame, piece, unit, enemyColor, primaryTargetColors)
 {
     let score = 0;
-    const primaryTargetColors = getPrimaryTargetColors(thisGame);
     const hasEnemyFrigate = piece.hasFrigate(enemyColor);
     if (unit.hasUnloadables())
     {
@@ -1749,7 +1743,9 @@ function commitExploration(thisGame)
     if (explorationPopup && !endTurnCommit)
     {
         thisGame.overlayCommitOnClick();
+        return true;
     }
+    return false;
 }
 
 
@@ -1820,7 +1816,9 @@ async function placeReserves(thisGame)
 }
 
 
-function placeReserveUnit(thisGame){
+function placeReserveUnit(thisGame)
+{
+    ensureValidBoard(thisGame);
     if (window.stopKomputer === true)
     {
         stopAndReset();
@@ -1946,9 +1944,12 @@ function endReservePhase(thisGame)
         thisGame.sendMove();
     }
     window.hasBattleBegun = false;
-    window.isKomputerReady = true;
-    resetKomputerButtonStyle();
-    console.log("Done.");
+    setTimeout(function()
+    {
+        window.isKomputerReady = true;
+        resetKomputerButtonStyle(false);
+        console.log("Done.");
+    }, 200)
 }
 
 
@@ -2368,12 +2369,13 @@ function sortByClosestToEnemy(thisGame, points)
     let enemyArmies = getArmyUnits(thisGame, enemyColors);
     if (!enemyArmies)
     {
-        const enemyColor = getRandomItem(enemyColors);
-        enemyArmies = [getRandomItem(thisGame.pieces.getOpponentCivilizations(thisGame.perspectiveColor)).findCivilization(enemyColor)];
-        if (enemyArmies.length === 0)
+        const enemyCivPieces = thisGame.pieces.getOpponentCivilizations(thisGame.perspectiveColor);
+        if (enemyCivPieces.length === 0)
         {
-            return points;
+            return;
         }
+        const enemyCivPiece = getRandomItem(enemyCivPieces);
+        enemyArmies = [enemyCivPiece.findCivilization(enemyCivPiece.getOpponentColor(thisGame.perspectiveColor))];
     }
     let minimumPointToEnemyDistances = []
     // Find the closest distance of each point to all enemies.
@@ -2788,23 +2790,11 @@ function isAccessibleByEnemyFrigate(thisGame, piece)
 // Highly specific instructions for the first two turns
 function placeCapital(thisGame)
 {
-    // Maybe reset game move count, in the case a previous game was played.
-    thisGame.maxMoveNumber = thisGame.maxMoveNumber < 6 ? thisGame.maxMoveNumber : 0;
+    thisGame.maxMoveNumber = thisGame.maxMoveNumber < 4 * thisGame.numberOfDistinctPlayers ? thisGame.maxMoveNumber : 0;
     const isFirstPlayer = thisGame.perspectiveColor === 0;
     const pieceIndexStandardChoices = getCommonInitialChoices(thisGame);
-    let pieceIndex = isFirstPlayer ? getFirstCapitalPieceIndex(thisGame, [...pieceIndexStandardChoices]) : getNextCapitalPieceIndex(thisGame, [...pieceIndexStandardChoices]);
-    if (pieceIndex === null)
-    {
-        pieceIndex = findRandomTargetPieceIndex(thisGame);
-        if (pieceIndex === null)
-        {
-            window.isKomputerReady = true;
-            resetKomputerButtonStyle();
-            console.log("Terrain not playable.");
-            return;
-        }        
-    }
-    let destinationScreenPoint = thisGame.pieces[pieceIndex].$screenRect.getCenter();
+    let pieceIndex = pieceIndexStandardChoices ? isFirstPlayer ? getFirstCapitalPieceIndex(thisGame, [...pieceIndexStandardChoices]) : getNextCapitalPieceIndex(thisGame, [...pieceIndexStandardChoices]) : null;
+    let destinationScreenPoint = pieceIndex ? thisGame.pieces[pieceIndex].$screenRect.getCenter() : null;
     // Explore 5 initial hexes, handle water.
     let hexOrder = thisGame.getMapCustomizationData();
     const hasWater = (hexOrder.indexOf("w") > -1) ? true : false;
@@ -2828,8 +2818,26 @@ function placeCapital(thisGame)
         setTimeout(function(){
             thisGame.customizeMapDoAll(true);        
             // Place capital & commit. 
-            thisGame.placeCapitalMouseDown(destinationScreenPoint);
-            commitExploration(thisGame);
+            if (destinationScreenPoint)
+            {
+                thisGame.placeCapitalMouseDown(destinationScreenPoint);
+            }
+            let runCount = 0;
+            const failsafe = 16;
+            while (!commitExploration(thisGame))
+            {
+                pieceIndex = findStrongTargetPieceIndex(thisGame);
+                destinationScreenPoint = thisGame.pieces[pieceIndex].$screenRect.getCenter();
+                thisGame.placeCapitalMouseDown(destinationScreenPoint);
+                runCount++;
+                if (runCount > failsafe)
+                {
+                    window.isKomputerReady = true;
+                    resetKomputerButtonStyle();
+                    console.log("Terrain not playable.");
+                    return;
+                }        
+            };
             setTimeout(function(){
                 // Maybe swap water hex for land.
                 const waterPopup = document.getElementById("Foundation_Elemental_" + gameVersion + "_waterSwap");
@@ -2839,7 +2847,7 @@ function placeCapital(thisGame)
                     console.log("Water swap!");
                 }
                 // Maybe reorder hexes explored by capital to keep a fast path to the center.
-                const leftSideIndex = pieceIndexStandardChoices[0];
+                const leftSideIndex = pieceIndexStandardChoices ? pieceIndexStandardChoices[0] : pieceIndex;
                 if(pieceIndex === leftSideIndex)
                 {
                     let hexOrder = thisGame.getMapCustomizationData();
@@ -2848,59 +2856,69 @@ function placeCapital(thisGame)
                 setTimeout(function(){
                     thisGame.customizeMapDoAll(true);
                     // End player 1 turn.
-                    if (thisGame.perspectiveColor === 0)
+                    if (thisGame.perspectiveColor === 0 && thisGame.numberOfDistinctPlayers < 7)
                     {
                         thisGame.endMyTurn();
-                        window.isKomputerReady = true;
-                        resetKomputerButtonStyle();
-                        console.log("Done.");
+                        setTimeout(function()
+                        {
+                            window.isKomputerReady = true;
+                            resetKomputerButtonStyle();
+                            console.log("Done.");
+                        }, 200);
                     }
                     // Player 2 places another town based on specific location data. Later reserve phases use other guidance.
                     else
                     {
                         if (thisGame.movePhase === 11)
                         {
-                            let element = document.querySelector("#Foundation_Elemental_" + gameVersion + "_reserve_0");
-                            thisGame.reserveOnMouseDown(null, thisGame.event("reserveOnMouseDown(this,event,#)"), 0);
-                            if (pieceIndexStandardChoices && pieceIndexStandardChoices.includes(pieceIndex))
+                            if (thisGame.numberOfDistinctPlayers < 4)
                             {
-                                const centralIndex = pieceIndexStandardChoices[1];
-                                pieceIndex = pieceIndex === centralIndex ? getRandomItem([pieceIndexStandardChoices[0], pieceIndexStandardChoices[2]]) : centralIndex;
-                            }
-                            else
-                            {
-                                pieceIndex = findRandomTargetPieceIndex(thisGame);
-                                if (pieceIndex === null)
+                                let element = document.querySelector("#Foundation_Elemental_" + gameVersion + "_reserve_0");
+                                thisGame.reserveOnMouseDown(null, thisGame.event("reserveOnMouseDown(this,event,#)"), 0);
+                                if (pieceIndexStandardChoices && pieceIndexStandardChoices.includes(pieceIndex))
                                 {
-                                    thisGame.endMyTurn();
-                                    window.isKomputerReady = true;
-                                    resetKomputerButtonStyle();
-                                    console.log("Done.");
+                                    const centralIndex = pieceIndexStandardChoices[1];
+                                    pieceIndex = pieceIndex === centralIndex ? getRandomItem([pieceIndexStandardChoices[0], pieceIndexStandardChoices[2]]) : centralIndex;
                                 }
-                            }
-                            destinationScreenPoint = thisGame.pieces[pieceIndex].$screenRect.getCenter();
-                            thisGame.placeReserveOnMouseUp(destinationScreenPoint);
-                            commitExploration(thisGame);
-                            setTimeout(function(){
-                                const waterPopup = document.getElementById("Foundation_Elemental_" + gameVersion + "_waterSwap");
-                                if (waterPopup)
+                                else
                                 {
-                                    thisGame.swapWaterForLand();
-                                    console.log("Water swap!");
-                                }
-                                setTimeout(function(){
-                                    thisGame.customizeMapDoAll(true);
-                                    element = document.querySelector("#Foundation_Elemental_" + gameVersion + "_reserve_0");
-                                    thisGame.reserveOnMouseDown(element, thisGame.event("reserveOnMouseDown(this,event,#)"), 0);
-                                    thisGame.placeReserveOnMouseUp( destinationScreenPoint );
-                                    thisGame.endMyTurn();
-                                    setTimeout(function(){
+                                    pieceIndex = findStrongTargetPieceIndex(thisGame);
+                                    if (pieceIndex === null)
+                                    {
+                                        thisGame.endMyTurn();
                                         window.isKomputerReady = true;
                                         resetKomputerButtonStyle();
                                         console.log("Done.");
+                                    }
+                                }
+                                destinationScreenPoint = thisGame.pieces[pieceIndex].$screenRect.getCenter();
+                                thisGame.placeReserveOnMouseUp(destinationScreenPoint);
+                                commitExploration(thisGame);
+                                setTimeout(function(){
+                                    const waterPopup = document.getElementById("Foundation_Elemental_" + gameVersion + "_waterSwap");
+                                    if (waterPopup)
+                                    {
+                                        thisGame.swapWaterForLand();
+                                        console.log("Water swap!");
+                                    }
+                                    setTimeout(function(){
+                                        thisGame.customizeMapDoAll(true);
+                                        element = document.querySelector("#Foundation_Elemental_" + gameVersion + "_reserve_0");
+                                        thisGame.reserveOnMouseDown(element, thisGame.event("reserveOnMouseDown(this,event,#)"), 0);
+                                        thisGame.placeReserveOnMouseUp( destinationScreenPoint );
+                                        thisGame.endMyTurn();
+                                        setTimeout(function(){
+                                            window.isKomputerReady = true;
+                                            resetKomputerButtonStyle();
+                                            console.log("Done.");
+                                        }, shortDelay)
                                     }, shortDelay)
-                                }, shortDelay)
-                            }, longDelay);
+                                }, longDelay);
+                            } // More than 3 players
+                            else
+                            {
+                                placeReserves(thisGame);
+                            }
                         }
                     }}, longDelay);
                 }, shortDelay);
@@ -2909,41 +2927,43 @@ function placeCapital(thisGame)
 }
 
 
-function hasInvalidCapitalHexes(thisGame, pieceIndexChoices)
+function hasInvalidCapitalHexes(pieceIndexChoices)
 {
-    if (pieceIndexChoices === null)
+    if (pieceIndexChoices === null || pieceIndexChoices.length === 0)
     {
         return true;
-    }
-    const defaultHexCount = 5;
-    if (thisGame.playOptions.mapCustomizationData.length >= defaultHexCount)
-    {
-        return false;
-    }
-    for (const pieceIndex of pieceIndexChoices)
-    {
-        if (!thisGame.isTargetPoint(thisGame.pieces[pieceIndex].boardPoint))
-        {
-            return true;
-        }
     }
     return false;
 }
 
 
-function findRandomTargetPieceIndex(thisGame)
+function findStrongTargetPieceIndex(thisGame)
 {
-    if (thisGame.targetPoints.length > 0)
+    if (thisGame.targetPoints && thisGame.targetPoints.length > 0)
     {
-        validPieceIndices = [];
+        let mountainPieceIndices = [];
+        let forestPieceIndices = [];
+        let validPieceIndices = [];
         for (const piece of thisGame.pieces)
         {
             if (thisGame.isTargetPoint(piece.boardPoint))
             {
-                validPieceIndices.push(piece.index);
+                if (piece.boardValue === "m")
+                {
+                    mountainPieceIndices.push(piece.index)
+                }
+                else if (piece.boardValue === "f")
+                {
+                    forestPieceIndices.push(piece.index)
+                }
+                else
+                {
+                    validPieceIndices.push(piece.index);
+                }
             }
         }
-        return getRandomItem(validPieceIndices);
+        return (mountainPieceIndices.length > 0 ? getRandomItem(mountainPieceIndices) : 
+                forestPieceIndices.length > 0 ? getRandomItem(forestPieceIndices) : getRandomItem(validPieceIndices));
     }
     return null;
 }
@@ -2966,10 +2986,6 @@ function terrainCount(stringHexData, terrainType)
 function getCommonInitialChoices(thisGame)
 {
     const choiceCount = thisGame.getNumMapCustomizations();
-    if (choiceCount !== 5)
-    {
-        return null;
-    }
     let pieceIndexChoices = [];
     let exploredHexIndex = thisGame.boardVisibility.indexOf("1");
     for (let i = 0; i < choiceCount && exploredHexIndex >= 0; i++)
@@ -2977,29 +2993,38 @@ function getCommonInitialChoices(thisGame)
         pieceIndexChoices.push(exploredHexIndex);
         exploredHexIndex = thisGame.boardVisibility.indexOf("1", exploredHexIndex + 1);
     }
+    if (pieceIndexChoices.length === 0)
+    {
+        return null;
+    }
+    const playerCount = thisGame.numberOfDistinctPlayers;
+    if (playerCount > 3 && !playerCount === 6)
+    {
+        return [Math.min(...pieceIndexChoices)];
+    }
     pieceIndexChoices.sort(function(a, b)
     { 
         if (thisGame.pieces[a].$screenRect.x < thisGame.pieces[b].$screenRect.x)
-        {
-            return -1;
-        }
-        if (thisGame.pieces[a].$screenRect.x === thisGame.pieces[b].$screenRect.x)
-        {
-            let mapCenterIndex = Math.floor(thisGame.pieces.length * 0.5) - 1;
-            let isOnMapLeftSide = thisGame.pieces[pieceIndexChoices[0]].$screenRect.x < thisGame.pieces[mapCenterIndex].$screenRect.x;
-            if (thisGame.pieces[a].$screenRect.y < thisGame.pieces[b].$screenRect.y)
             {
-                if (isOnMapLeftSide)
-                {
-                    return 1;
-                }
                 return -1;
             }
-        }
+            if (thisGame.pieces[a].$screenRect.x === thisGame.pieces[b].$screenRect.x)
+            {
+                let mapCenterIndex = Math.floor(thisGame.pieces.length * 0.5) - 1;
+                let isOnMapLeftSide = thisGame.pieces[pieceIndexChoices[0]].$screenRect.x < thisGame.pieces[mapCenterIndex].$screenRect.x;
+                if (thisGame.pieces[a].$screenRect.y < thisGame.pieces[b].$screenRect.y)
+                {
+                    if (isOnMapLeftSide)
+                    {
+                        return 1;
+                    }
+                    return -1;
+                }
+            }
         return 1;
     });
     pieceIndexChoices.splice(1, 1);
-    pieceIndexChoices.splice(2, 1);
+    pieceIndexChoices.splice(2, 1);    
     return pieceIndexChoices;
 }
 
@@ -3035,17 +3060,13 @@ function getNextCapitalPieceIndex(thisGame, pieceIndexChoices)
     {
         return null;
     }
-    const firstPlayerCentralIndex = isSmallBoard ? 9 : 11; 
     const firstPlayerColor = 0; 
-    // Take the opposite side of the first player, or if center, play random.
-    if (thisGame.pieces[firstPlayerCentralIndex].hasUnit(firstPlayerColor, "C"))
-    {
-        return pieceIndexChoices.splice(getRandomIndexExclusive(pieceIndexChoices.length), 1)[0];
-    }
     const firstPlayerCapitalPiece = thisGame.pieces.findCapitalPiece(firstPlayerColor);
     if (firstPlayerCapitalPiece)
     {
-        if (firstPlayerCapitalPiece.index < firstPlayerCentralIndex)
+        const centerPieceIndex = Math.floor((thisGame.pieces.length * 0.5) - 1);
+        const centerPiece = thisGame.pieces[centerPieceIndex];
+        if (firstPlayerCapitalPiece.$screenRect.x < centerPiece.$screenRect.x)
         {
             return pieceIndexChoices.pop();
         }
@@ -3065,24 +3086,24 @@ function decideInitialHexOrder(hexOrder, capitalPieceIndex, originalChoices)
     // Seeks to boost edge town support via land path between center and edge.
     // When capital is on the right, keeps possible water hexes toward the right.
     // Otherwise, keeps water hexes toward the left.
-    const rightMostIndex = originalChoices.length - 1;
-    const hasRightSideCapital = capitalPieceIndex === originalChoices[rightMostIndex]; 
+    const rightMostIndex = originalChoices ? originalChoices.length - 1 : null;
+    const hasRightSideCapital = rightMostIndex ? capitalPieceIndex === originalChoices[rightMostIndex] : false; 
     const waterCount = terrainCount(hexOrder, "w");
-    let initialHexOrder = [];
+    let newHexOrder = [];
     switch (waterCount)
     {
         case 2: 
-            initialHexOrder = hasRightSideCapital ? 
+            newHexOrder = hasRightSideCapital ? 
                 [hexOrder[1], hexOrder[3], hexOrder[0], hexOrder[4], hexOrder[2]] : 
                 [hexOrder[2], hexOrder[4], hexOrder[0], hexOrder[3], hexOrder[1]] ;
             break;
         case 1:
-            initialHexOrder = hasRightSideCapital ? 
+            newHexOrder = hasRightSideCapital ? 
                 [hexOrder[2], hexOrder[0], hexOrder[1], hexOrder[4], hexOrder[3]] :
                 [hexOrder[3], hexOrder[4], hexOrder[1], hexOrder[0], hexOrder[2]] ;
             break;
         default: 
-            initialHexOrder = hasRightSideCapital ?
+            newHexOrder = hasRightSideCapital ?
                 [hexOrder[3], hexOrder[0], hexOrder[2], hexOrder[1], hexOrder[4]] :
                 [hexOrder[4], hexOrder[1], hexOrder[2], hexOrder[0], hexOrder[3]] ;
             break;
@@ -3093,18 +3114,23 @@ function decideInitialHexOrder(hexOrder, capitalPieceIndex, originalChoices)
     // Try to put a forest in the middle.
     if (forestCount > 0)
     {
-        const forestIndex = initialHexOrder.indexOf("f");
+        const forestIndex = newHexOrder.indexOf("f");
         const middleIndex = 2;
-        swapHexOrder(initialHexOrder, forestIndex, middleIndex);
+        swapHexOrder(newHexOrder, forestIndex, middleIndex);
     }
     // Try to put grassland on the far side.
     if (grassCount > 0)
     {
-        const grassIndex = initialHexOrder.indexOf("g");
+        const grassIndex = newHexOrder.indexOf("g");
         const farSideIndex = hasRightSideCapital ? 0 : 4;
-        swapHexOrder(initialHexOrder, grassIndex, farSideIndex);
+        swapHexOrder(newHexOrder, grassIndex, farSideIndex);
     }
-    return initialHexOrder.join("");
+    let hexArray = hexOrder.split("");
+    while (newHexOrder.length < hexArray.length)
+    {
+        newHexOrder.push(hexArray.pop());
+    }
+    return newHexOrder.join("");
 }
 
 
@@ -3140,13 +3166,21 @@ function decideHexOrder(thisGame, hexTerrain, exploringUnitBoardPoint)
         runCount++;
     }
     // After the first turn or on any large board, measure how close each hex is to facing the enemy. 
-    if (thisGame.maxMoveNumber > 8 || isLargeBoard)
+    if (thisGame.maxMoveNumber > 8 || (isLargeBoard && thisGame.perspectiveColor !== 0))
     {
         // For each hex index, find the angle of vectors, from unit to enemy and from unit to hex.
         // Find an enemy point (top / bottom center) and draw a vector to it from the unit origin.
         // Then draw a second vector to the hex and measure the angle.
         const enemyColors = getEnemyColors(thisGame);
-        const randomEnemyColor = getRandomItem(enemyColors);
+        const activeEnemyColors = [];
+        for (const color of enemyColors)
+        {
+            if (thisGame.pieces.getScore(color) > 0)
+            {
+                activeEnemyColors.push(color);
+            }
+        }
+        const randomEnemyColor = getRandomItem(activeEnemyColors);
         const enemyCapitalPiece = thisGame.pieces.findCapitalPiece(randomEnemyColor);
         const enemyPoint = enemyCapitalPiece.boardPoint.clone();
         const vectorToEnemy = enemyPoint.subtract(exploringUnitBoardPoint);
@@ -4020,6 +4054,57 @@ function patchPiecePrototype()
 }
 
 
+// Patch shows or hides Komputer controls depending on the active tab.
+// Overwrites original codebase functions.
+function patchControls()
+{
+    GamesByEmail.Controls.StartGameStartTab.prototype.bringToFront = function(event, bringTitleIntoView)
+    {
+        this.parent.bringTabToFront(this,event,bringTitleIntoView);
+        const startNewGameTabId = "Foundation_Elemental_1_title_0";
+        if (event.target.id === startNewGameTabId)
+        {
+            hideKomputerControls();
+        }
+    }
+
+    GamesByEmail.Controls.StartGameJoinTab.prototype.bringToFront = function(event, bringTitleIntoView)
+    {
+        this.parent.bringTabToFront(this,event,bringTitleIntoView);
+        const joinGameTabId = "Foundation_Elemental_1_title_1"; 
+        if (event.target.id === joinGameTabId)
+        {
+            hideKomputerControls();
+        }
+    }
+
+    GamesByEmail.Controls.StartGamePreviewTab.prototype.bringToFront = function(event, bringTitleIntoView)
+    {
+        this.parent.bringTabToFront(this,event,bringTitleIntoView);
+        const seePreviewTabId = "Foundation_Elemental_1_title_2";
+        if (event.target.id === seePreviewTabId)
+        {
+            setTimeout(function(){ showKomputerControls() }, 200);
+        }
+    }
+}
+
+
+function hideKomputerControls()
+{
+    const visible = false;
+    resetAllButtonStyles(visible);
+}
+
+
+function showKomputerControls()
+{
+    resetAllButtonStyles();
+}
+
+
+// Patch adds check for objects before accessing.
+// Overwrites original codebase function.
 function patchGamePrototype()
 {
     GamesByEmail.Viktory2Game.prototype.redeployUnitsMouseUp = function(screenPoint)
@@ -4237,11 +4322,11 @@ function stopAndReset(resetKomputerButton = true)
 }
 
 
-function resetAllButtonStyles()
+function resetAllButtonStyles(visible = true)
 {
     resetKomputerButtonStyle();
     resetStopKomputerButtonStyle();
-    resetButtonPositions();
+    resetButtonPositions(visible);
     showEndTurnButtons();
 }
 
@@ -4286,35 +4371,61 @@ function resetStopKomputerButtonStyle()
 }
 
 
-function resetButtonPositions()
+function resetButtonPositions(visible = true)
 {
     let runButton = document.getElementById("KomputerButton");
-    runButton.style.top = getRunButtonTop();
     let stopButton = document.getElementById("StopKomputerButton");
-    stopButton.style.top = getStopButtonTop();
     let darkModeToggle = document.getElementById("DarkModeToggle");
-    darkModeToggle.style.top = getDarkModeToggleTop();
     let darkModeLabel = document.getElementById("DarkModeLabel");
-    darkModeLabel.style.top = getDarkModeToggleLabelTop();
     let boardBuilder = document.getElementById("BoardBuilder");
     let boardBuilderToggle = document.getElementById("BoardBuilderToggle");
-    if (boardBuilder && boardBuilderToggle)
+    let multiplayerForm = document.getElementById("MultiplayerForm");
+    if (visible)
     {
-        boardBuilder.style.top = getBoardBuilderTop();
-        boardBuilder.style.left = getBoardBuilderLeft();
-        boardBuilderToggle.style.top = getBoardBuilderToggleTop();
-        boardBuilderToggle.style.left = getBoardBuilderToggleLeft();
-        if (boardBuilderToggle.labels.length)
+        runButton.style.top = getRunButtonTop();
+        stopButton.style.top = getStopButtonTop();
+        darkModeToggle.style.top = getDarkModeToggleTop();
+        darkModeLabel.style.top = getDarkModeToggleLabelTop();
+        runButton.style.visibility = ""; 
+        stopButton.style.visibility = "";
+        darkModeToggle.style.visibility = ""; 
+        darkModeLabel.style.visibility = ""; 
+        if (boardBuilder && boardBuilderToggle)
         {
-            boardBuilderToggle.labels[0].style.top = getBoardBuilderToggleLabelTop();
-            boardBuilderToggle.labels[0].style.left = getBoardBuilderToggleLabelLeft();
+            boardBuilder.style.top = getBoardBuilderTop();
+            boardBuilder.style.left = getBoardBuilderLeft();
+            boardBuilderToggle.style.top = getBoardBuilderToggleTop();
+            boardBuilderToggle.style.left = getBoardBuilderToggleLeft();
+            if (boardBuilderToggle.labels.length)
+            {
+                boardBuilderToggle.labels[0].style.top = getBoardBuilderToggleLabelTop();
+                boardBuilderToggle.labels[0].style.left = getBoardBuilderToggleLabelLeft();
+            }
+            boardBuilder.style.visibility = ""; 
+            boardBuilderToggle.style.visibility = ""; 
+        }
+        if (multiplayerForm)
+        {
+            multiplayerForm.style.top = getMultiplayerFormTop();
+            multiplayerForm.style.left = getMultiplayerFormLeft();
+            multiplayerForm.style.visibility = "";   
         }
     }
-    let multiplayerForm = document.getElementById("MultiplayerForm");
-    if (multiplayerForm)
+    else
     {
-        multiplayerForm.style.top = getMultiplayerFormTop();
-        multiplayerForm.style.left = getMultiplayerFormLeft();
+        runButton.style.visibility = "hidden"; 
+        stopButton.style.visibility = "hidden";
+        darkModeToggle.style.visibility = "hidden"; 
+        darkModeLabel.style.visibility = "hidden"; 
+        if (boardBuilder && boardBuilderToggle)
+        {
+            boardBuilder.style.visibility = "hidden"; 
+            boardBuilderToggle.style.visibility = "hidden"; 
+        }
+        if (multiplayerForm)
+        {
+            multiplayerForm.style.visibility = "hidden";   
+        }
     }
 }
 
@@ -4714,7 +4825,7 @@ function getTouchHitBox()
 
 function addBoardBuilder(thisGame)
 {
-    if (thisGame.previewing)
+    if (thisGame.previewing && isOnPreviewTab())
     {
         const boardBuilderDiv = document.createElement('div');
         boardBuilderDiv.id = "BoardBuilder";
@@ -4725,6 +4836,7 @@ function addBoardBuilder(thisGame)
         boardBuilderDiv.style.left = getBoardBuilderLeft();
         boardBuilderDiv.style.fontSize = "10px";
         boardBuilderDiv.style.fontFamily = "Verdana";
+        boardBuilderDiv.style.padding = '4px';
         boardBuilderDiv.innerText = "Board Builder";
         document.body.appendChild(boardBuilderDiv);
     
@@ -4758,7 +4870,6 @@ function createRadioButton(value, addListener, groupName = 'RadioGroup_') {
     radioButton.id = groupName + value; 
     radioButton.style.marginRight = '6px';
     addListener(radioButton);
-    //addTerrainInputListener(radioButton);
     const label = document.createElement('label');
     label.innerText = value;
     label.htmlFor = radioButton.id; 
@@ -4786,7 +4897,8 @@ function addTerrainInputListener(radioButton)
 
 function getBoardBuilderTop()
 {
-    const playerNotesOffset = 156;
+    // const playerNotesOffset = 156;
+    const playerNotesOffset = 14;
     const playerNotesRect = document.getElementById('Foundation_Elemental_' + gameVersion + '_playerNotes').getBoundingClientRect();
     return (window.scrollY + playerNotesRect.bottom + playerNotesOffset + 'px');
 }
@@ -4794,7 +4906,7 @@ function getBoardBuilderTop()
 
 function getBoardBuilderLeft()
 {
-    const playerNotesOffset = 128;
+    const playerNotesOffset = 200;
     const playerNotesRect = document.getElementById('Foundation_Elemental_' + gameVersion + '_playerNotes').getBoundingClientRect();
     const playerNotesMidwayX = (playerNotesRect.left + playerNotesRect.right) * 0.3;
     return (window.scrollX + playerNotesMidwayX + playerNotesOffset + 'px');
@@ -4823,7 +4935,7 @@ function addBoardBuilderToggle()
 
 function getBoardBuilderToggleTop()
 {
-    const boardBuilderTop = 154;
+    const boardBuilderTop = 12;
     const playerNotesRect = document.getElementById('Foundation_Elemental_' + gameVersion + '_playerNotes').getBoundingClientRect();
     return (window.scrollY + playerNotesRect.bottom + boardBuilderTop + 'px');
 }
@@ -4831,7 +4943,7 @@ function getBoardBuilderToggleTop()
 
 function getBoardBuilderToggleLeft()
 {
-    const boardBuilderLeft = 200;
+    const boardBuilderLeft = 272;
     const playerNotesRect = document.getElementById('Foundation_Elemental_' + gameVersion + '_playerNotes').getBoundingClientRect();
     const playerNotesMidwayX = (playerNotesRect.left + playerNotesRect.right) * 0.3;
     return (window.scrollX + playerNotesMidwayX + boardBuilderLeft + 'px');
@@ -4840,7 +4952,7 @@ function getBoardBuilderToggleLeft()
 
 function getBoardBuilderToggleLabelTop()
 {
-    const boardBuilderTop = 159;
+    const boardBuilderTop = 17;
     const playerNotesRect = document.getElementById('Foundation_Elemental_' + gameVersion + '_playerNotes').getBoundingClientRect();
     return (window.scrollY + playerNotesRect.bottom + boardBuilderTop + 'px');
 }
@@ -4848,7 +4960,7 @@ function getBoardBuilderToggleLabelTop()
 
 function getBoardBuilderToggleLabelLeft()
 {
-    const boardBuilderLeft = 220;
+    const boardBuilderLeft = 292;
     const playerNotesRect = document.getElementById('Foundation_Elemental_' + gameVersion + '_playerNotes').getBoundingClientRect();
     const playerNotesMidwayX = (playerNotesRect.left + playerNotesRect.right) * 0.3;
     return (window.scrollX + playerNotesMidwayX + boardBuilderLeft + 'px');
@@ -5018,6 +5130,10 @@ function isBoardBuilderDisabled()
 
 function enableBoardBuilder()
 {
+    if (!isOnPreviewTab())
+    {
+        return;
+    }
     const toggle = document.getElementById("BoardBuilderToggle");
     if (toggle && !toggle.checked)
     {
@@ -5041,18 +5157,25 @@ function addLocalMultiplayer(thisGame)
         multiplayerForm.style.left = getMultiplayerFormLeft();
         multiplayerForm.style.fontSize = "10px";
         multiplayerForm.style.fontFamily = "Verdana";
-        multiplayerForm.innerText = "Komputer Multiplayer";
+        multiplayerForm.style.padding = '4px';
+        multiplayerForm.innerText = "Local Multiplayer";
         document.body.appendChild(multiplayerForm);
         addMultiplayerRestartButton(thisGame, multiplayerForm);
-        window.isKomputerMultiplayerSelected = {};
+        window.isPlayerCountSelected = {};
         const inputOptions = [
             {value: '2 Player'},
             {value: '3 Player'},
+            {value: '4 Player'},
+            {value: '5 Player'},
+            {value: '6 Player'},
+            {value: '7 Player'},
+            {value: '8 Player'},
         ];
         inputOptions.forEach(option => {
-            window.isKomputerMultiplayerSelected[option.value] = false;
-            const radioButtons = createRadioButton(option.value, addMultiplayerInputListener);
-            multiplayerForm.appendChild(radioButtons);
+            window.isPlayerCountSelected[option.value] = false;
+            const radioButton = createRadioButton(option.value, addMultiplayerInputListener);
+            radioButton.style.visibility = "hidden"; 
+            multiplayerForm.appendChild(radioButton);
         });
     }
 }
@@ -5062,13 +5185,13 @@ function addMultiplayerInputListener(radioButton)
 {
     radioButton.addEventListener('change', () => 
         {
-            Object.keys(window.isKomputerMultiplayerSelected).forEach(key => { isKomputerMultiplayerSelected[key] = false; });
-            isKomputerMultiplayerSelected[radioButton.value] = true;
-            radioButton.checked = isKomputerMultiplayerSelected[radioButton.value] ? true : false; 
+            Object.keys(window.isPlayerCountSelected).forEach(key => { isPlayerCountSelected[key] = false; });
+            isPlayerCountSelected[radioButton.value] = true;
+            radioButton.checked = isPlayerCountSelected[radioButton.value] ? true : false; 
             console.log("Pressed: " + radioButton.value);
-            let playerCount = radioButton.value[0] * 1;
-            let formIndex = Foundation.$registry.length - 1;
-            let playButton = document.getElementById("Foundation_Elemental_" + formIndex + "_PlayButton");
+            const playerCount = radioButton.value[0] * 1;
+            const formIndex = Foundation.$registry.length - 1;
+            const playButton = document.getElementById("Foundation_Elemental_" + formIndex + "_PlayButton");
             if (playButton)
             {
                 setupNextGamePlayers(playerCount, formIndex);
@@ -5081,32 +5204,20 @@ function addMultiplayerInputListener(radioButton)
 function setupNextGamePlayers(playerCount, formIndex)
 {
     Foundation.$registry[formIndex].numPlayers = playerCount;
-    while (Foundation.$registry[formIndex].players.length > playerCount)
+    Foundation.$registry[formIndex].players = [];
+    while (Foundation.$registry[formIndex].players.length < playerCount)
     {
-        Foundation.$registry[formIndex].players.shift();
+        let nextPlayer = Foundation.$registry[formIndex].players.length + 1;
+        Foundation.$registry[formIndex].players.unshift({title: 'Player ' + nextPlayer, id: nextPlayer.toString(), mode: 3, rank: 0, playerId: nextPlayer - 1});
     }
-    switch(playerCount)
-    {
-        case 3:
-            if (Foundation.$registry[formIndex].players.length < playerCount)
-            {
-                Foundation.$registry[formIndex].players.unshift({title: 'Player 3', id: '3', mode: 3, rank: 0, playerId: 2});
-            }
-            let largeBoardToggle = document.getElementById("Foundation_Elemental_" + formIndex + "_info_bigBoard");
-            if (largeBoardToggle)
-            {
-                largeBoardToggle.checked = true;
-            }
-            break;
-        default:
-            break;
-    }
+    const newGameButton = document.getElementById("MultiplayerRestartButton");
+    newGameButton.style.backgroundColor = "lightgreen";
 }
 
 
 function getMultiplayerFormTop()
 {
-    const playerNotesOffset = 156;
+    const playerNotesOffset = 14;
     const playerNotesRect = document.getElementById('Foundation_Elemental_' + gameVersion + '_playerNotes').getBoundingClientRect();
     return (window.scrollY + playerNotesRect.bottom + playerNotesOffset + 'px');
 }
@@ -5114,7 +5225,7 @@ function getMultiplayerFormTop()
 
 function getMultiplayerFormLeft()
 {
-    const playerNotesOffset = 144;
+    const playerNotesOffset = 174;
     const playerNotesRect = document.getElementById('Foundation_Elemental_' + gameVersion + '_playerNotes').getBoundingClientRect();
     const playerNotesMidwayX = (playerNotesRect.left + playerNotesRect.right) * 0.4;
     return (window.scrollX + playerNotesMidwayX + playerNotesOffset + 'px');
@@ -5123,43 +5234,46 @@ function getMultiplayerFormLeft()
 
 function multiplayerRestartButtonMouseClick(thisGame)
 {
+    stopAndReset();
+    disableBoardBuilder();
+    expandMultiplayerForm();
     const formIndex = Foundation.$registry.length - 1;
     const playButton = document.getElementById("Foundation_Elemental_" + formIndex + "_PlayButton");
     const startAnotherButton = document.getElementById("Foundation_Elemental_" + gameVersion + "_startAnotherGame");
     if (playButton)
     {
-        for (let playerCount in window.isKomputerMultiplayerSelected)
+        for (let playerCount in window.isPlayerCountSelected)
         {
-            if (window.isKomputerMultiplayerSelected[playerCount] === true)
+            if (window.isPlayerCountSelected[playerCount] === true)
             {
                 playerCount = playerCount[0] * 1;
                 setupNextGamePlayers(playerCount, formIndex);
                 break;
             }
         }   
+        hideMultiplayerForm();
         Foundation.$registry[formIndex].play();
     }
     else if (startAnotherButton)
     {
-        thisGame.startAnotherGame();
-        maybeSelectDefaultPlayerCount();  
+        thisGame.startAnotherGame(); 
     }
     else
     {
-        if (!document.getElementById("Foundation_Elemental_" + gameVersion + "_resign"))
+        if (!isOnPreviewTab() || !document.getElementById("Foundation_Elemental_" + gameVersion + "_resign"))
         {
             thisGame.sendMove();
-            setTimeout(function(){
-                if (document.getElementById("Foundation_Elemental_" + gameVersion + "_resign"))
+            setTimeout(function()
+            {
+                if (isOnPreviewTab() && document.getElementById("Foundation_Elemental_" + gameVersion + "_resign"))
                 {
                     thisGame.resign();
                     thisGame.startAnotherGame();
-                    maybeSelectDefaultPlayerCount();    
                 }
                 else
                 {
-                    button = document.getElementById("MultiplayerRestartButton");
-                    button.innerText = "Plz End Turn";
+                    const button = document.getElementById("MultiplayerRestartButton");
+                    button.innerText = isOnPreviewTab() ? "Plz End Turn" : "Use Preview Tab";
                     setTimeout(function()
                     {
                         button.innerText = "New Game";
@@ -5171,17 +5285,74 @@ function multiplayerRestartButtonMouseClick(thisGame)
         {
             thisGame.resign();
             thisGame.startAnotherGame();
-            maybeSelectDefaultPlayerCount();  
         }    
+    }
+    setTimeout(function(){ 
+        hideDefaultPlayControls()
+        maybeSelectDefaultPlayerCount(); 
+        resetButtonPositions();
+    }, 1200);
+}
+
+
+function expandMultiplayerForm()
+{
+    if (!isOnPreviewTab())
+    {
+        return;
+    }
+    const form = document.getElementById("MultiplayerForm");
+    form.style.backgroundColor = 'lightgrey';
+    form.style.border = 'thick solid darkgrey';
+    const newGameButton = form.firstElementChild;
+    newGameButton.innerText = "Click to Begin";
+    for (let i = 1; i < form.children.length; i++)
+    {
+        let radioButton = form.children[i];
+        radioButton.style.visibility = "visible";
+    }
+}
+
+
+function hideMultiplayerForm()
+{
+    const form = document.getElementById("MultiplayerForm");
+    form.style.backgroundColor = ''
+    form.style.border = '';
+    const newGameButton = form.firstElementChild;
+    newGameButton.style.backgroundColor = "";
+    newGameButton.innerText = "Loading...";
+    setTimeout(function()
+    {
+        newGameButton.innerText = "New Game";
+    }, 1200);
+    for (let i = 1; i < form.children.length; i++)
+    {
+        let radioButton = form.children[i];
+        radioButton.style.visibility = "hidden"
+    }
+}
+
+
+function hideDefaultPlayControls()
+{
+    const formIndex = Foundation.$registry.length - 1;
+    const playButton = document.getElementById("Foundation_Elemental_" + formIndex + "_PlayButton");
+    if (playButton)
+    {
+        clearIntervalsAndTimers();
+        playButton.style.visibility = "hidden";
+        const cancelButton = document.getElementById("Foundation_Elemental_" + formIndex + "_CancelButton");
+        cancelButton.style.visibility = "hidden";
     }
 }
 
 
 function maybeSelectDefaultPlayerCount()
 {
-    for (const playerCount in window.isKomputerMultiplayerSelected)
+    for (const playerCount in window.isPlayerCountSelected)
     {
-        if (window.isKomputerMultiplayerSelected[playerCount] === true)
+        if (window.isPlayerCountSelected[playerCount] === true)
         {
             return;
         }
@@ -5190,8 +5361,14 @@ function maybeSelectDefaultPlayerCount()
     if (radioButton)
     {
         radioButton.checked = true;
-        window.isKomputerMultiplayerSelected["2 Player"] = true;
+        window.isPlayerCountSelected["2 Player"] = true;
     }
+}
+
+
+function isOnPreviewTab()
+{
+    return (window.location.href === 'http://gamesbyemail.com/Games/Viktory2#Preview');
 }
 
 
