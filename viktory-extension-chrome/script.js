@@ -105,6 +105,7 @@ function runKomputerClick(thisGame)
     {
         if (thisGame.previewing || thisGame.player.isMyTurn())
         {
+            maybeClearLastAction(thisGame);
             resetGlobals();
             disableBoardBuilder();
             styleButtonForRun();
@@ -128,8 +129,26 @@ function runKomputerClick(thisGame)
 
 function clearIntervalsAndTimers()
 {
+    // Clear everything but game flash intervals.
+    const thisGame = GamesByEmail.findFirstGame();
+    const flashList = thisGame.pieces.flashList;
+    const saveIds = [];
+    if (flashList && flashList.constructor === Array)
+    {
+        for (const flash of flashList)
+        {
+            if (flash)
+            {
+                saveIds.push(flash.timerHandle);
+            }
+        }    
+    }
     for (var i = setTimeout(function() {}, 0); i > 0; i--) 
     {
+        if (saveIds.includes(i))
+        {
+            continue;
+        }
         window.clearInterval(i);
         window.clearTimeout(i);
     }
@@ -144,12 +163,13 @@ function resetGlobals(resetKomputerButton = false)
     window.isSmallBoard = thisGame.pieces.length === 62;
     window.isLargeBoard = !isSmallBoard;
     window.stopKomputer = false;
-    window.moveIntervalId = null;
+    window.lastMovedUnit = null;
     window.movingUnitIndex = 0;
     window.moveWave = 0;
     window.flashIndex = 0;
     window.flashIds = [];
     window.holdingUnits = [];
+    window.waitCount = 0;
     window.hasBattleBegun = false;
     window.isBombarding = false;
     window.isExploring = false;
@@ -171,14 +191,14 @@ function runKomputer(thisGame)
         stopAndReset();
         return;
     }
+    clearIntervalsAndTimers();
     hideEndTurnButtons();
-    maybeClearLastAction(thisGame);
     setTimeout(function(){ handleCurrentState(thisGame) }, 100);
 }
 
 function handleCurrentState(thisGame)
 {
-    console.log("Checking movePhase.");
+    console.log("Checking state.");
     switch(thisGame.movePhase)
     {
         case 0:
@@ -235,22 +255,24 @@ function maybeClearLastAction(thisGame)
 function moveUnits(thisGame)
 {
     hideEndTurnButtons();
-    const moveIntervalPeriod = 1500;
-    const initialDelay = 400;
-    setTimeout(async function(plan){
+    const moveIntervalPeriod = 1300;
+    const initialDelay = 100;
+    setTimeout(function(){
         switch (window.moveWave)
         {
             case 0: {
                 console.log("May move land units.");
                 let landUnits = findAvailableLandUnits(thisGame, thisGame.perspectiveColor);
                 orderFromFarthestToEnemy(thisGame, landUnits, false);
-                moveEachUnit(thisGame, landUnits, moveIntervalPeriod, plan);
+                prepareNextUnit(landUnits);
+                moveEachUnit(thisGame, landUnits, moveIntervalPeriod);
                 break;
             }
             case 1: {
                 console.log("May move frigates.");
                 const frigates = findFrigates(thisGame, [thisGame.perspectiveColor]);
-                moveEachUnit(thisGame, frigates, moveIntervalPeriod, plan);
+                prepareNextUnit(frigates);
+                moveEachUnit(thisGame, frigates, moveIntervalPeriod);
                 break;
             }
             case 2: {
@@ -259,18 +281,35 @@ function moveUnits(thisGame)
                 const navy = findFrigates(thisGame, [thisGame.perspectiveColor]);
                 const armyNavy = army.concat(navy);
                 const allMilitaryUnits = armyNavy.concat(window.holdingUnits);
-                moveEachUnit(thisGame, allMilitaryUnits, moveIntervalPeriod, plan);
+                prepareNextUnit(allMilitaryUnits);
+                moveEachUnit(thisGame, allMilitaryUnits, moveIntervalPeriod);
                 break;
             }
             case 3: {
                 console.log("Handling all battles.");
-                const battlePiece = findNextBattle(thisGame);
-                if (battlePiece)
+                if (thisGame.hasBattlesPending)
                 {
-                    fightBattle(thisGame, battlePiece);
+                    const battlePiece = findNextBattle(thisGame);
+                    if (battlePiece)
+                    {
+                        window.waitCount = 0;
+                        fightBattle(thisGame, battlePiece);
+                    }
+                    else
+                    {
+                        if (waitCount > 4)
+                        {
+                            console.log("Game reports a battle pending but none found.")
+                            stopAndReset(true);
+                            return;
+                        }
+                        window.waitCount++;
+                        setTimeout(function(){ runKomputer(thisGame)}, 500);
+                    }
                 }
                 else
                 {
+                    window.waitCount = 0;
                     window.moveWave++;
                     runKomputer(thisGame);
                 }
@@ -296,8 +335,8 @@ function findAvailableLandUnits(thisGame, color)
     let landUnits = [];
     for (const piece of thisGame.pieces)
     {
-        // Skip reserve units
-        if (piece.valueIndex === - 1)
+        const isReservePiece = piece.valueIndex === - 1;
+        if (isReservePiece)
         {
             continue;
         }
@@ -315,9 +354,14 @@ function findAvailableLandUnits(thisGame, color)
 
 function orderFromFarthestToEnemy(thisGame, units, reverse)
 {
+    // Skip to improve performance on large boards.
+    if (thisGame.numberOfDistinctPlayers > 3 || units.length > 14)
+    {
+        return;
+    }
     const enemyColors = getEnemyColors(thisGame);
     let enemyArmies = getArmyUnits(thisGame, enemyColors);
-    if (!enemyArmies)
+    if (!enemyArmies || enemyArmies.length > 16)
     {
         return;
     }
@@ -361,6 +405,47 @@ function getEnemyColors(thisGame)
 }
 
 
+function prepareNextUnit(unitList)
+{
+    // If the last moved unit is in the list but not first, swap it to first.
+    if (!unitList || unitList.length === 0 || !window.lastMovedUnit)
+    {
+        return;
+    }
+    if (lastMovedUnit.movementComplete || lastMovedUnit.piece.hasEnemy(lastMovedUnit.color, lastMovedUnit.rulerColor) || !lastMovedUnit.piece)
+    {
+        lastMovedUnit = null;
+        return;
+    }
+    window.movingUnitIndex = 0;
+    const firstUnit = unitList[movingUnitIndex];
+    if (firstUnit.index === lastMovedUnit.index && firstUnit.type === lastMovedUnit.type && firstUnit.piece.index === lastMovedUnit.piece.index)
+    {
+        return;
+    }
+    let nextUnitIndex = null;
+    let i = 0;
+    for (const unit of unitList)
+    {
+        if (unit.index === lastMovedUnit.index && unit.type === lastMovedUnit.type && unit.piece.index === lastMovedUnit.piece.index)
+        {
+            nextUnitIndex = i;
+            break;
+        }
+        i++;
+    }
+    if (nextUnitIndex)
+    {
+        unitList[0] = unitList[nextUnitIndex];
+        unitList[nextUnitIndex] = firstUnit;
+    }
+    else
+    {
+        lastMovedUnit = null;
+    }
+}
+
+
 function findFrigates(thisGame, colors, pieceList)
 {
     let frigates = [];
@@ -390,25 +475,31 @@ function findFrigates(thisGame, colors, pieceList)
 async function endMovementPhase(thisGame)
 {
     // Reset movement, then restart loop to place reserves, or stop for the next player.
-    window.moveWave = 0;
+    clearIntervalsAndTimers();
     clearHoldingUnits();
     thisGame.endMyMovement();
-    window.moveIntervalId = await setInterval(function(){
+    setTimeout(function()
+    {
         if (thisGame.movePhase === 11)
         {
-            clearIntervalsAndTimers();
             runKomputer(thisGame);
         }
         else if(window.currentPlayerTurn !== thisGame.perspectiveColor)
         {
-            clearIntervalsAndTimers();
-            window.isKomputerReady = true;
             resetKomputerButtonStyle();
+            window.isKomputerReady = true;
             console.log("Done.");
         }
         else
-        {
-            thisGame.endMyMovement();
+        {    
+            if (window.waitCount > 2)
+            {
+                console.log("Cannot end movement phase.");
+                stopAndReset(true);
+                return;
+            }
+            window.waitCount++;
+            setTimeout(function(){ runKomputer(thisGame)}, 200);
         }
     }, 200);
 }
@@ -416,7 +507,8 @@ async function endMovementPhase(thisGame)
 
 async function moveEachUnit(thisGame, movableUnits, intervalPeriod)
 {
-    window.moveIntervalId = await setInterval(function(){
+    setInterval(function()
+    {
         if (window.stopKomputer === true)
         {
             stopAndReset();
@@ -438,7 +530,6 @@ async function moveEachUnit(thisGame, movableUnits, intervalPeriod)
                         continue;
                     }
                     console.log("Blitz attack!");
-                    clearIntervalsAndTimers();
                     clearMovementFlags();
                     fightBattle(thisGame, piece);
                     return;
@@ -465,70 +556,65 @@ async function moveEachUnit(thisGame, movableUnits, intervalPeriod)
                 if (shouldAcceptMove)
                 {
                     flashMoveTrail(thisGame, unit, possibleMoves, bestMove);
+                    const flashLeadTime = 100;
                     setTimeout(function(){
                         // Move unit.
                         const isUnitSelected = moveUnitSimulateMouseDown(thisGame, unit.screenPoint, unit.type);
                         if (isUnitSelected)
                         {
                             const destinationScreenPoint = thisGame.pieces[pieceIndex].$screenRect.getCenter();
-                            moveUnitSimulateMouseUp(thisGame, destinationScreenPoint);
-                            // Commit to explore after some processing time.
-                            const normalPopup = document.getElementById("Foundation_Elemental_" + gameVersion + "_overlayCommit");
-                            if ((normalPopup || document.getElementById("Foundation_Elemental_" + gameVersion + "_customizeMapDoAll")) &&
-                                !document.getElementById("Foundation_Elemental_" + gameVersion + "_endMyTurn"))
+                            const processMouseDownUpdateTime = 200;
+                            setTimeout(function()
                             {
-                                window.isExploring = true;
-                                clearIntervalsAndTimers();
-                                if (normalPopup)
+                                moveUnitSimulateMouseUp(thisGame, destinationScreenPoint);
+                                // Commit to explore after some processing time.
+                                const normalPopup = document.getElementById("Foundation_Elemental_" + gameVersion + "_overlayCommit");
+                                if ((normalPopup || document.getElementById("Foundation_Elemental_" + gameVersion + "_customizeMapDoAll")) &&
+                                    !document.getElementById("Foundation_Elemental_" + gameVersion + "_endMyTurn"))
                                 {
-                                    thisGame.overlayCommitOnClick();
+                                    window.isExploring = true;
+                                    window.movingUnitIndex = 0;
+                                    clearIntervalsAndTimers();
+                                    if (normalPopup)
+                                    {
+                                        thisGame.overlayCommitOnClick();
+                                    }
+                                    setTimeout(function(){
+                                        settleExploredTerrain(thisGame, unit);
+                                    }, 128);
                                 }
-                                setTimeout(function(){
-                                    settleExploredTerrain(thisGame, unit);
-                                }, 128);
-                            }
-                            // Make sure frigates can unload all cargo
-                            if (unit.isFrigate() && unit.hasUnloadables() && (window.moveWave === finalMoveWave) && thisGame.pieces[pieceIndex].isLand())
-                            {
-                                window.isUnloading = true;
-                            }
-                            else
-                            {
-                                window.isUnloading = false
-                            }
+                                // Make sure frigates can unload all cargo
+                                if (unit.isFrigate() && unit.hasUnloadables() && (window.moveWave === finalMoveWave) && thisGame.pieces[pieceIndex].isLand())
+                                {
+                                    window.isUnloading = true;
+                                }
+                                else
+                                {
+                                    window.isUnloading = false
+                                }
+                            }, processMouseDownUpdateTime);
                         } // End if isUnitSelected
-                        // On the rare case the unit isn't ready, push it to the end for later.
+                        // On the rare case a valid unit isn't ready, push it to the end for later.
                         else
                         {
                             clearMovementFlags();
-                            movableUnits.push(movableUnits.splice(window.movingUnitIndex, 1)[0]);
                             const isValidUnit = unit && unit.piece && thisGame.pieces[unit.piece.index].units[unit.index];
                             if (isValidUnit)
                             {
+                                movableUnits.push(movableUnits.splice(window.movingUnitIndex, 1)[0]);
                                 unit.setHilite(false);
                             }
                         }   
-                    }, 256);
+                    }, flashLeadTime);
                 } // End if shouldAcceptMove
             } // End if possibleMoves
         } // End if may move
-        setTimeout(function(){
-            decideHowToContinueMove(thisGame, movableUnits, unit, finalMoveWave);}, 400);
+        const processMoveUpdateTime = 1100;
+        setTimeout(function(){ 
+            // Ideally, the next decision is made before the next interval and allows time to process the previous.
+            // In any case, it should make the right decision - worst case, it waits for the next interval.
+            decideHowToContinueMove(thisGame, movableUnits, unit, finalMoveWave);}, processMoveUpdateTime);
     }, intervalPeriod);
-}
-
-
-function ensureMovementComplete(thisGame, battlePiece)
-{
-    const piece = thisGame.pieces[battlePiece.index];
-    for (let unit of piece.units)
-    {
-        if (unit.isMilitary())
-        {
-            unit.spacesMoved = unit.movementAllowance;
-            unit.movementComplete = true;
-        }
-    }
 }
 
 
@@ -547,7 +633,7 @@ function getNextUnitIndex(thisGame, movableUnits)
     {
         return null;
     }
-    let nextUnitIndex = window.movingUnitIndex < movableUnits.length ? window.movingUnitIndex : movableUnits.length - 1;
+    let nextUnitIndex = window.movingUnitIndex < movableUnits.length ? window.movingUnitIndex : 0;
     let movableUnit = movableUnits[nextUnitIndex];
     while (isNotValidUnit(thisGame, movableUnit) && (nextUnitIndex + 1 < movableUnits.length))
     {
@@ -561,12 +647,12 @@ function getNextUnitIndex(thisGame, movableUnits)
 
 function ensureIsClickable(thisGame, movableUnits, nextUnitIndex)
 {
+    // If there's another movable unit of the same type and status in front, insert the other unit at the next unit index. 
     let movableUnit = movableUnits[nextUnitIndex];
     if (isNotValidUnit(thisGame, movableUnit))
     {
         return false;
     }
-    // If there's another movable unit of the same type and status in front, insert the other unit at the next unit index. 
     let piece = movableUnit.piece;
     for (const unit of piece.units)
     {
@@ -585,8 +671,8 @@ function ensureIsClickable(thisGame, movableUnits, nextUnitIndex)
 
 function shouldFavorOffense(thisGame, firstMoveWave, movingUnitsLength)
 {
-    const isLikelyHelpful = thisGame.maxMoveNumber > 25 && movingUnitsLength > 2;
-    return (isLikelyHelpful && window.moveWave === firstMoveWave && window.movingUnitIndex < (movingUnitsLength * 0.4))
+    const isLikelyHelpful = (thisGame.maxMoveNumber > 25) && (movingUnitsLength > 2) && (window.movingUnitIndex < (movingUnitsLength * 0.4));
+    return (isLikelyHelpful && window.moveWave === firstMoveWave)
 }
 
 
@@ -606,18 +692,26 @@ function decideMayMove(thisGame, unit, firstMoveWave, finalMoveWave, canClick)
     if (!unit.movementComplete || unit.hasUnloadables())
     {
         // Empty frigates shouldn't move on the last wave.
-        if (unit.type === "f" && window.moveWave === finalMoveWave && !unit.hasUnloadables())
+        if (unit.isFrigate() && !unit.hasUnloadables() && window.moveWave === finalMoveWave)
         {
             return false;
         }
-        // Hold back artillery and cavalry who don't have an adjacent frigate and who aren't maneuvering to attack from moving the first wave - to better support any battles started by infantry.
-        return ( window.moveWave > firstMoveWave ? true : (unit.type === "c" || unit.type === "a") && !hasAdjacentFrigate(thisGame, unit.piece) && !window.isManeuveringToAttack ? false : true );
+        else if(window.moveWave > firstMoveWave)
+        {
+            return true;
+        }
+        // Hold back artillery and cavalry who don't have an adjacent frigate and who aren't maneuvering to attack.
+        // By generally not moving on the first wave, they better support any battles started by infantry.
+        if ((unit.isCavalry() || unit.isArtillery()) && !hasAdjacentFrigate(thisGame, unit.piece) && !window.isManeuveringToAttack)
+        {
+            return false;
+        }
     }
     if (unit.isFrigate() && !unit.hasUnloadables())
     {
         window.isUnloading = false;
     }
-    return false;
+    return true;
 }
 
 
@@ -644,17 +738,11 @@ function settleExploredTerrain(thisGame, unit)
     setTimeout(function()
     {
         thisGame.customizeMapDoAll(true);
-        window.explorationId = setInterval(function()
-        {
-            if (isDoneExploring(thisGame))
-            {  
-                clearInterval(window.explorationId);
-                window.isExploring = false;
-                runKomputer(thisGame);
-            } 
-            setTimeout(function(){
-                ensureValidBoard(thisGame);
-            }, 200)
+        setTimeout(function()
+        {   
+            ensureValidBoard(thisGame);
+            window.isExploring = false;                
+            setTimeout(function(){ runKomputer(thisGame) }, 100)
         }, 200);
     }, 600);
 }
@@ -663,38 +751,41 @@ function settleExploredTerrain(thisGame, unit)
 function flashMoveTrail(thisGame, unit, possibleMoves, movePoint)
 {
     unit.setHilite(true);
-    let flashTrailPoints = [];
-    let runCount = 0;
-    const failsafe = 3;
-    do 
+    if (unit.isFrigate())
     {
-        let piece = thisGame.pieces.findAtPoint(movePoint);
-        flashTrailPoints.unshift(piece.boardPoint);
-        for (const possibleMove of possibleMoves)
+        let flashTrailPoints = [];
+        let runCount = 0;
+        const failsafe = 4;
+        do 
         {
-            if (movePoint.retreatIndex === possibleMove.index)
+            let piece = thisGame.pieces.findAtPoint(movePoint);
+            flashTrailPoints.unshift(piece.boardPoint);
+            for (const possibleMove of possibleMoves)
             {
-                movePoint = possibleMove;
+                if (movePoint.retreatIndex === possibleMove.index)
+                {
+                    movePoint = possibleMove;
+                }
             }
-        }
-        runCount++;
-    } while (movePoint.retreatIndex !== unit.piece.index && runCount < failsafe)
-    window.flashIndex = 0;
-    window.flashIds.push(setInterval(function(){ 
-        if (window.flashIndex < flashTrailPoints.length)
-        {
-            thisGame.pieces.flash(1, null, flashTrailPoints[flashIndex]);
-            flashIndex++;
-        }
-        else
-        {
-            for (const Id of window.flashIds)
+            runCount++;
+        } while (movePoint.retreatIndex !== unit.piece.index && runCount < failsafe)
+        window.flashIndex = 0;
+        window.flashIds.push(setInterval(function(){ 
+            if (window.flashIndex < flashTrailPoints.length)
             {
-                clearInterval(Id);
+                thisGame.pieces.flash(1, null, flashTrailPoints[flashIndex]);
+                flashIndex++;
             }
-            flashIndex = 0;
-        }
-    }, 200));
+            else
+            {
+                for (const Id of window.flashIds)
+                {
+                    clearInterval(Id);
+                }
+                flashIndex = 0;
+            }
+        }, 200));
+    }
 }
 
 
@@ -708,32 +799,44 @@ function decideHowToContinueMove(thisGame, movableUnits, unit, finalMoveWave)
 {
     hideEndTurnButtons();
     window.isManeuveringToAttack = (window.isManeuveringToAttack && !unit.movementComplete && !unit.holding) ? true : false;
-    if (window.isExploring || window.isBombarding || window.isUnloading || window.isManeuveringToAttack)
+    if (window.isExploring || window.isBombarding || window.isUnloading || window.isManeuveringToAttack || window.hasBattleBegun)
     {
-        // Pass: wait for these to finish.
+        // Wait for above to finish.
+        return;  
     }
-    else if (shouldBombard(thisGame, unit, finalMoveWave))
+    if (shouldBombard(thisGame, unit, finalMoveWave))
     {
         window.isBombarding = true;
-        clearIntervalsAndTimers();
+        window.lastMovedUnit = null;
+        window.movingUnitIndex = 0;
+        window.isManeuveringToAttack = false; 
         unit.movementComplete = true;
         unit.holding = false;
-        window.isManeuveringToAttack = false; 
+        clearIntervalsAndTimers();
         bombard(thisGame, unit, unit.getBombardables());
+        return;
     }
-    // Move the next unit next interval.
-    else if ( (window.movingUnitIndex + 1) < movableUnits.length )
+    // If more units, when the last unit is done, move the next unit.
+    if ((window.movingUnitIndex + 1) < movableUnits.length)
     {
+        if (window.lastMovedUnit)
+        {
+            const isValidUnit = (lastMovedUnit && lastMovedUnit.piece && thisGame.pieces[lastMovedUnit.piece.index].units[lastMovedUnit.index] && 
+                                lastMovedUnit === thisGame.pieces[lastMovedUnit.piece.index].units[lastMovedUnit.index]);
+            if (isValidUnit && !lastMovedUnit.movementComplete && !lastMovedUnit.holding)
+            {
+                return;
+            }
+        } 
         window.movingUnitIndex++;
+        return;
     }
-    // Clear interval, reset moving unit index, cue next wave or game action.
-    else
-    {
-        clearInterval(window.moveIntervalId);
-        window.movingUnitIndex = 0;
-        window.moveWave++;
-        runKomputer(thisGame);
-    }
+    // Clear and reset for next wave.
+    clearIntervalsAndTimers();
+    window.movingUnitIndex = 0;
+    window.moveWave++;
+    runKomputer(thisGame);
+    return;
 }
 
 
@@ -785,17 +888,16 @@ function getMoveScore(thisGame, possibleMove, unit, favorOffense)
             const defendingUnitCount = piece.countOpponentMilitary(thisGame.perspectiveColor);
             const defendingRollCount = piece.numDefenderRolls(piece.getOpponentColor(thisGame.perspectiveColor));
             const defensivePower = (0.08 * defendingRollCount) + (0.04 * defendingUnitCount);
-
+            // Complete any tactical maneuvers.
+            if (window.isManeuveringToAttack && piece.hasBattle(thisGame.perspectiveColor, thisGame.player.team.rulerColor))
+            {
+                return piece.hasCapital(thisGame.perspectiveColor) ? 1 : piece.hasCapital(enemyColor) ? 0.99 : defendingRollCount === 1 ? 0.98 : 0.96;
+            }
             // Check enemy cities & towns.
             if (piece.hasOpponentCivilization(thisGame.perspectiveColor))
             {
                 // Urgently try to retake a lost capital.
                 if (piece.hasCapital(thisGame.perspectiveColor))
-                {
-                    return 1;
-                }
-                // Complete any tactical maneuver across open terrain.
-                if (window.isManeuveringToAttack && piece.hasBattle(thisGame.perspectiveColor, thisGame.player.team.rulerColor))
                 {
                     return 1;
                 }
@@ -880,7 +982,7 @@ function getMoveScore(thisGame, possibleMove, unit, favorOffense)
             // Maybe maneuver unit before attack.
             // If unit has extra moves close to a battle, pass through open terrain to get more attack vectors.
             const canManeuverBeforeAttack = (possibleMove.spacesNeeded < remainingMoveAllowance && 
-                (unit.type === "c" || hasSmoothTerrain(thisGame, piece.index) || Math.random() < 0.20));
+                (unit.type === "c" || hasSmoothTerrain(thisGame, piece.index)));
             if (canManeuverBeforeAttack && hasAdjacentBattle(thisGame, piece)) 
             {
                 const battlePiece = findAdjacentBattle(thisGame, piece);
@@ -890,6 +992,10 @@ function getMoveScore(thisGame, possibleMove, unit, favorOffense)
                     window.isManeuveringToAttack = true;
                     return 1;
                 }
+            }
+            if (possibleMove.spacesNeeded === remainingMoveAllowance && (!unit.isArtillery() || !hasAdjacentEnemyCivilization(thisGame, piece)))
+            {
+                score *= 0.8;
             }
         }
         // Give importance to own civ defense.
@@ -1365,6 +1471,7 @@ function decideMoveAcceptance(thisGame, unit, destinationIndex)
 {
     if (unit.piece.hasBattle(thisGame.perspectiveColor, thisGame.player.team.color))
     {
+        unit.movementComplete = true;
         return false;
     }
     const destinationPiece = thisGame.pieces[destinationIndex];
@@ -1374,7 +1481,7 @@ function decideMoveAcceptance(thisGame, unit, destinationIndex)
     }
     // Consider guarding a beseiged town vs attacking.
     const defenderCount = unit.piece.getMilitaryUnitCount(thisGame.perspectiveColor);
-    const isPinned = unit.piece.hasAdjacentRollingEnemy(thisGame.perspectiveColor, thisGame.player.team.rulerColor);
+    const isPinned = hasAdjacentEnemyArmy(thisGame, unit.piece);  
     if (isPinned && unit.piece.hasCivilization(thisGame.perspectiveColor))
     {
         // Going to own capital or from own capital to fight is always approved.
@@ -1388,7 +1495,13 @@ function decideMoveAcceptance(thisGame, unit, destinationIndex)
         if (unit.type === "c" && destinationPiece.hasBattle(thisGame.perspectiveColor, thisGame.player.team.rulerColor && !destinationPiece.hasCavalry(thisGame.perspectiveColor)) ||
             unit.isCavalry() && destinationPiece.hasOpponentTown(thisGame.perspectiveColor) && unguarded)
         {
-            return Math.random() < 0.8 ? true : false;
+            if (Math.random() < 0.8)
+            {
+                return true;
+            }
+            unit.holding = true;
+            window.holdingUnits.push(unit);
+            return false;            
         }
         // Otherwise, for last pinned defenders:
         if (defenderCount === 1)
@@ -1561,7 +1674,7 @@ function bombard(thisGame, unit, bombardablePoints)
                     thisGame.overlayCommitOnClick();
                     setTimeout(function(){ replaceBattleMessage() }, 16);
                     // Apply hits.
-                    const applyHitsDelay = 200;
+                    const applyHitsDelay = 100;
                     setTimeout(function(){
                         replaceBattleMessage();
                         if (thisGame.battleData)
@@ -1574,15 +1687,18 @@ function bombard(thisGame, unit, bombardablePoints)
                             }
                         }
                         const reviewDelay = 800;
-                        // Unit reference is unreliable, so set properties via the game.
+                        // Double check this is set. Use game reference for reliability.
                         thisGame.pieces[unit.piece.index].units[unit.index].hasBombarded = true;
                         thisGame.pieces[unit.piece.index].units[unit.index].noBombard = true;
                         thisGame.pieces[unit.piece.index].updateUnitDisplay()
                         setTimeout(function(){
                             thisGame.pieces[targetPiece.index].bombardOkClick(thisGame.player.team.color);
-                            window.isBombarding = false;
-                            console.log("Bombardment!");
-                            runKomputer(thisGame);
+                            const processUpdateDelay = 100;
+                            setTimeout(function(){
+                                console.log("Bombardment!");
+                                window.isBombarding = false;
+                                runKomputer(thisGame);
+                            }, processUpdateDelay)
                         }, reviewDelay)
                     }, applyHitsDelay);
                 }, commitDelay);
@@ -1637,102 +1753,127 @@ function findNextBattle(thisGame)
 
 function fightBattle(thisGame, battlePiece, isReserveBattle = false)
 {
-    commitExploration(thisGame);
-    selectBattle(thisGame, battlePiece);
-    ensureMovementComplete(thisGame, battlePiece);
-    hideEndTurnButtons();
-    // Do prebattle artillery.
-    if (document.getElementById("Foundation_Elemental_" + gameVersion + "_battleOk"))
+    if (window.hasBattleBegun)
     {
-        battlePiece.preBattleOkClick(thisGame.player.team.color);
+        return;
     }
-    // Roll loop
-    const rollDelay = 400;
-    setTimeout(function roll(){
-        thisGame.overlayCommitOnClick();
-        setTimeout(replaceBattleMessage, 100);
-        // Apply hits.
-        const applyHitsDelay = 400;
-        setTimeout(function(){
-            replaceBattleMessage();
-            if (thisGame.battleData)
-            {
-                const data = thisGame.getBattleData();
-                if (data && data.piece.attackerBattleInfo &&
-                    data.piece.attackerBattleInfo.decisionNeeded ||
-                    data.piece.defenderBattleInfo &&
-                    data.piece.defenderBattleInfo.decisionNeeded)
-                {
-                    applyHits(thisGame, battlePiece.index, data);
-                }
-            }
-            // Roll again or close after review, then continue game / find next battle.
-            const battleReviewDelay = 1600;
-            hideEndTurnButtons();
+    window.hasBattleBegun = true;
+    window.lastMovedUnit = null;
+    battlePiece.setBorder(true);
+    clearIntervalsAndTimers();
+    commitExploration(thisGame);
+    hideEndTurnButtons();
+    const markBattleDelay = 500;
+    setTimeout(function()
+    {
+        selectBattle(thisGame, battlePiece);
+        const rollDelay = 600;
+        setTimeout(function roll(){
+            thisGame.overlayCommitOnClick();
+            setTimeout(replaceBattleMessage, 100);
+            const applyHitsDelay = 600;
             setTimeout(function(){
-                const hasNotWonGame = thisGame.movePhase !== 0; 
-                if (hasNotWonGame)
+                hideEndTurnButtons();
+                if (thisGame.battleData)
                 {
-                    // Caution - this is a "gotcha" bug waiting to happen, as it happened twice already.
-                    // Don't shorten below to: battlePiece.battleOkClick(thisGame.perspectiveColor);
-                    // The battlePiece object is no longer a reference to the game piece! 
-                    // Many bothans died to bring us this information.
-                    thisGame.pieces[battlePiece.index].battleOkClick(thisGame.player.team.color);
-                    const reRollDelay = 1200;
-                    hideEndTurnButtons();
-                    replaceBattleMessage();
-                    setTimeout(function(){
-                        if (document.getElementById("Foundation_Elemental_" + gameVersion + "_overlayCommit"))
+                    const data = thisGame.getBattleData();
+                    if (data && data.piece.attackerBattleInfo &&
+                        data.piece.attackerBattleInfo.decisionNeeded ||
+                        data.piece.defenderBattleInfo &&
+                        data.piece.defenderBattleInfo.decisionNeeded)
+                    {
+                        applyHits(thisGame, battlePiece.index, data);
+                    }
+                }
+                // Roll again or close after review.
+                const battleReviewDelay = 1600;
+                setTimeout(function handleRollResult(){
+                    const hasNotWonGame = thisGame.movePhase !== 0; 
+                    if (hasNotWonGame)
+                    {
+                        // Caution - this is a "gotcha" bug waiting to happen, as it happened twice already.
+                        // Don't shorten below to: battlePiece.battleOkClick(thisGame.perspectiveColor);
+                        // The battlePiece object is no longer a reference to the game piece! 
+                        // Many bothans died to bring us this information.
+                        const rollResult = document.getElementById("Foundation_Elemental_" + gameVersion + "_battleOk");
+                        if (rollResult)
                         {
-                            roll();
-                        }
+                            thisGame.pieces[battlePiece.index].battleOkClick(thisGame.player.team.color);
+                            window.waitCount = 0;
+                            hideEndTurnButtons();
+                            replaceBattleMessage();
+                            const reRollDelay = 1200;
+                            setTimeout(function(){
+                                const rollRequired = document.getElementById("Foundation_Elemental_" + gameVersion + "_overlayCommit");
+                                if (rollRequired)
+                                {
+                                    roll();
+                                }
+                                else
+                                {
+                                    if (isReserveBattle)
+                                    {
+                                        // Clear the reserve interval now to prevent the Komputer from replaying a reserve battle.
+                                        // Also prevents stopping the Komputer manually, until the turn is over - likely a couple seconds away. 
+                                        hideEndTurnButtons()
+                                        setTimeout(function(){
+                                            const battleReview = document.getElementById("Foundation_Elemental_" + gameVersion + "_battleOk");
+                                            if (battleReview)
+                                            {
+                                                thisGame.pieces[battlePiece.index].battleOkClick(thisGame.player.team.color);
+                                            }
+                                            window.hasBattleBegun = false;
+                                            hideEndTurnButtons();
+                                            setTimeout(function()
+                                            {
+                                                // Check for more reserve battles, which are rare, but possible.
+                                                maybeFightReserveBattle(thisGame);
+                                                if (!thisGame.hasBattlesPending && !window.hasBattleBegun)
+                                                {
+                                                    endReservePhase(thisGame);
+                                                }
+                                            }, 200);
+                                        }, battleReviewDelay);
+                                    }
+                                    else
+                                    {
+                                        // After battle
+                                        setTimeout(function()
+                                        {
+                                            window.hasBattleBegun = false; 
+                                            runKomputer(thisGame) 
+                                        }, 600);
+                                    }
+                                }
+                            }, reRollDelay);
+                        } // No roll result, rare but possible - try again or quit.
                         else
                         {
-                            if (isReserveBattle)
+                            setTimeout(function()
                             {
-                                // Clear the reserve interval now to prevent the Komputer from replaying a reserve battle.
-                                // Also prevents stopping the Komputer manually, until the turn is over - likely a couple seconds away. 
-                                hideEndTurnButtons()
-                                setTimeout(function(){
-                                    const battleReview = document.getElementById("Foundation_Elemental_" + gameVersion + "_battleOk");
-                                    if (battleReview)
-                                    {
-                                        thisGame.pieces[battlePiece.index].battleOkClick(thisGame.player.team.color);
-                                    }
-                                    window.hasBattleBegun = false;
-                                    hideEndTurnButtons();
-                                    setTimeout(function()
-                                    {
-                                        // Check for more reserve battles, which are rare, but possible.
-                                        maybeFightReserveBattle(thisGame);
-                                        if (!thisGame.hasBattlesPending && !window.hasBattleBegun)
-                                        {
-                                            endReservePhase(thisGame);
-                                        }
-                                    }, 200);
-                                }, battleReviewDelay);
-                            }
-                            else
-                            {
-                                // After battle
-                                thisGame.update();
-                                window.hasBattleBegun = false;
-                                runKomputer(thisGame);
-                            }
+                                window.waitCount++;
+                                if (waitCount > 2)
+                                {
+                                    console.log("Battle result missing. Will stop and reset.");
+                                    stopAndReset(true);
+                                    return;
+                                }
+                                handleRollResult();       
+                            }, 600);
                         }
-                    }, reRollDelay);
-                }
-                // Game won. Reset for start.
-                else
-                {
-                    thisGame.maxMoveNumber = 0;
-                    window.isKomputerReady = true;
-                    resetKomputerButtonStyle(true);
-                    console.log("Viktory.");
-                }
-            }, battleReviewDelay);
-        }, applyHitsDelay);
-    }, rollDelay);
+                    }
+                    // Game won. Reset for start.
+                    else
+                    {
+                        thisGame.maxMoveNumber = 0;
+                        window.isKomputerReady = true;
+                        resetKomputerButtonStyle(true);
+                        console.log("Viktory.");
+                    }
+                }, battleReviewDelay);
+            }, applyHitsDelay);
+        }, rollDelay);
+    }, markBattleDelay);
 }
 
 
@@ -1751,11 +1892,7 @@ function commitExploration(thisGame)
 
 function selectBattle(thisGame, battlePiece)
 {
-    if (!window.hasBattleBegun)
-    {
-        window.hasBattleBegun = true;
-        thisGame.moveUnitsMouseDown(battlePiece.$screenRect.getCenter());
-    }
+    thisGame.moveUnitsMouseDown(battlePiece.$screenRect.getCenter());
 }
 
 
@@ -1796,16 +1933,10 @@ function applyHits(thisGame, pieceIndex, battleData, isBombarding = false)
             thisPiece.hitLowestMilitaryUnits(attackerUnitList, hitCount, false);
         }
     }
-    setTimeout(function(){
-        if (isBombarding)
-        {
-            thisPiece.bombardOkClick(attackerColor);
-        }
-        else
-        {
-            thisPiece.battleOkClick(attackerColor);
-        }
-    }, 400);
+    if (isBombarding)
+    {
+        setTimeout(function(){ thisPiece.bombardOkClick(attackerColor) }, 400);
+    }
 }
 
 
@@ -1832,7 +1963,7 @@ function placeReserveUnit(thisGame)
     const reserveUnits = thisGame.player.team.reserveUnits;
     const controlsCapital = thisGame.doesColorControlTheirCapital(thisGame.player.team.color);
     let hasPlayableReserveUnit = false;
-    if (thisGame.movePhase === 11 && reserveUnits.length > 0)
+    if (reserveUnits.length > 0)
     {
         for (let i = 0; i < reserveUnits.length; i++)
         {
@@ -1866,7 +1997,7 @@ function placeReserveUnit(thisGame)
     // End placing reserves. 
     else
     {
-        clearInterval(window.reserveIntervalId);
+        clearIntervalsAndTimers();
         ensureValidBoard(thisGame);
         maybeRecallTroops(thisGame);
         maybeRecallFrigatesToPort(thisGame);
@@ -2458,7 +2589,7 @@ function maybeRecallTroops(thisGame)
 function counterGraveDanger(thisGame, armyUnits)
 {
     const usingCavalry = false;
-    const failsafe = 128;
+    const failsafe = 64;
     let runCount = 0;
     let recallUnits = getPrioritizedRecallUnits(thisGame, armyUnits, usingCavalry);
     for (let unitIndex = 0; unitIndex < recallUnits.length; unitIndex++)
@@ -2507,7 +2638,7 @@ function counterGraveDanger(thisGame, armyUnits)
 function counterThreats(thisGame, armyUnits)
 {
     const usingCavalry = true;
-    const failsafe = 256;
+    const failsafe = 64;
     let runCountI = 0;
     let recallUnits = getPrioritizedRecallUnits(thisGame, armyUnits, usingCavalry);
     for (let unitIndex = 0; unitIndex < recallUnits.length && runCountI < failsafe; unitIndex++)
@@ -3747,11 +3878,11 @@ function moveUnitSimulateMouseDown(thisGame, screenPoint, type)
     {
         if (unit.isFrigate())
         {
-            thisGame.setTargetPoints(getFrigateMovables(unit));
+            thisGame.setTargetPoints(getFrigateMovables(unit), false);
         }
         else
         {
-            thisGame.setTargetPoints(unit.getMovables());
+            thisGame.setTargetPoints(unit.getMovables(), false);
         }
         thisGame.onLeftMouseUp="moveUnitsMouseUp";
         thisGame.onMouseMove=null;
@@ -3769,7 +3900,6 @@ function moveUnitSimulateMouseDown(thisGame, screenPoint, type)
             (piece=thisGame.pieces.findAtPoint(boardPoint)) &&
             piece.hasBattle(thisGame.player.team.color,thisGame.player.team.rulerColor))
         {
-            piece.setBorder(true);
             thisGame.battleIndex=piece.index;
             thisGame.pushMove("Battle",thisGame.logEntry(6,piece.index,piece.boardValue,piece.getOpponentColor(thisGame.player.team.color)),piece,piece.hasPreBattle(thisGame.player.team.color) ? "processPreBattleMove" : "processStartBattleMove",true,"beginBattle","cancel");
             thisGame.update();
@@ -4058,33 +4188,36 @@ function patchPiecePrototype()
 // Overwrites original codebase functions.
 function patchControls()
 {
-    GamesByEmail.Controls.StartGameStartTab.prototype.bringToFront = function(event, bringTitleIntoView)
+    if (GamesByEmail.Controls)
     {
-        this.parent.bringTabToFront(this,event,bringTitleIntoView);
-        const startNewGameTabId = "Foundation_Elemental_1_title_0";
-        if (event.target.id === startNewGameTabId)
+        GamesByEmail.Controls.StartGameStartTab.prototype.bringToFront = function(event, bringTitleIntoView)
         {
-            hideKomputerControls();
+            this.parent.bringTabToFront(this,event,bringTitleIntoView);
+            const startNewGameTabId = "Foundation_Elemental_1_title_0";
+            if (event.target.id === startNewGameTabId)
+            {
+                hideKomputerControls();
+            }
         }
-    }
 
-    GamesByEmail.Controls.StartGameJoinTab.prototype.bringToFront = function(event, bringTitleIntoView)
-    {
-        this.parent.bringTabToFront(this,event,bringTitleIntoView);
-        const joinGameTabId = "Foundation_Elemental_1_title_1"; 
-        if (event.target.id === joinGameTabId)
+        GamesByEmail.Controls.StartGameJoinTab.prototype.bringToFront = function(event, bringTitleIntoView)
         {
-            hideKomputerControls();
+            this.parent.bringTabToFront(this,event,bringTitleIntoView);
+            const joinGameTabId = "Foundation_Elemental_1_title_1"; 
+            if (event.target.id === joinGameTabId)
+            {
+                hideKomputerControls();
+            }
         }
-    }
 
-    GamesByEmail.Controls.StartGamePreviewTab.prototype.bringToFront = function(event, bringTitleIntoView)
-    {
-        this.parent.bringTabToFront(this,event,bringTitleIntoView);
-        const seePreviewTabId = "Foundation_Elemental_1_title_2";
-        if (event.target.id === seePreviewTabId)
+        GamesByEmail.Controls.StartGamePreviewTab.prototype.bringToFront = function(event, bringTitleIntoView)
         {
-            setTimeout(function(){ showKomputerControls() }, 200);
+            this.parent.bringTabToFront(this,event,bringTitleIntoView);
+            const seePreviewTabId = "Foundation_Elemental_1_title_2";
+            if (event.target.id === seePreviewTabId)
+            {
+                setTimeout(function(){ showKomputerControls() }, 200);
+            }
         }
     }
 }
@@ -4099,6 +4232,8 @@ function hideKomputerControls()
 
 function showKomputerControls()
 {
+    const darkModeToggle = document.getElementById("DarkModeToggle");
+    maybeStylePage(darkModeToggle.checked);
     resetAllButtonStyles();
 }
 
@@ -4107,6 +4242,27 @@ function showKomputerControls()
 // Overwrites original codebase function.
 function patchGamePrototype()
 {
+    GamesByEmail.Viktory2Piece.prototype.moveUnit = function(unit)
+    {
+        unit.piece.removeUnit(unit);
+        unit.piece=this;
+        if (!unit.movementComplete || this.hasEnemy(unit.color,unit.rulerColor))
+        {
+            for (var i=this.units.length;i>0;i--)
+                (this.units[i]=this.units[i-1]).index=i;
+            (this.units[0]=unit).index=0;
+        }
+        else
+        {
+            unit.index=this.units.length;
+            this.units.push(unit);
+        }
+        if (!unit.movementComplete && !unit.piece.hasEnemy(unit.color, unit.rulerColor))
+        {
+            window.lastMovedUnit = unit;
+        }
+    }
+
     GamesByEmail.Viktory2Game.prototype.redeployUnitsMouseUp = function(screenPoint)
     {
         this.onMouseMove=null;
@@ -4177,6 +4333,31 @@ function patchGamePrototype()
            }
         }
         return true;
+    }
+
+    GamesByEmail.Viktory2Game.prototype.setTargetPoints = function (points, shouldSetBorder = true)
+    {
+        this.targetPoints=points;
+        this.targetPointsAllLand=true;
+        if (this.pieces)
+        {
+           this.pieces.clearBorders();
+           if (this.targetPoints)
+              for (var i=0;i<this.targetPoints.length;i++)
+                 if (!this.targetPoints[i].placeHolderOnly)
+                 {
+                    var p=this.pieces.findAtPoint(this.targetPoints[i]);
+                    if (shouldSetBorder)
+                    {
+                        p.setBorder(true);
+                    }
+                    if (!p.isLand())
+                       this.targetPointsAllLand=false;
+                 }
+        }
+        if (!this.targetPoints || this.targetPoints.length==0)
+           this.targetPointsAllLand=false;
+        return this.targetPoints && this.targetPoints.length>0;
     }
 }
 
@@ -4897,7 +5078,6 @@ function addTerrainInputListener(radioButton)
 
 function getBoardBuilderTop()
 {
-    // const playerNotesOffset = 156;
     const playerNotesOffset = 14;
     const playerNotesRect = document.getElementById('Foundation_Elemental_' + gameVersion + '_playerNotes').getBoundingClientRect();
     return (window.scrollY + playerNotesRect.bottom + playerNotesOffset + 'px');
