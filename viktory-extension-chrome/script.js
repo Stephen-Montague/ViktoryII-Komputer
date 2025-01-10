@@ -2,16 +2,17 @@
 console.log("Hello Viktory.");
 
 // Setup.
-if (!window.isKomputerReady)
+if (!window.isKomputerInitialized)
 {
-    setInterval(function()
+    const intervalId = setInterval(function()
     {
         if (hasGamesByEmailFoundation())
         {
             if (setupExtension())
             {
-                clearIntervalsAndTimers();
-                window.isKomputerReady = true;
+                clearInterval(intervalId);
+                isKomputerInitialized = true;
+                isKomputerReady = true;
             }
         }
     }, 640);
@@ -33,7 +34,7 @@ function setupExtension()
     {
         patchControls();
         addTouchSupport();
-        patchGamePrototype();
+        patchGamePrototype(thisGame);
         patchPiecePrototype();
         patchUnitPrototype();
         if (!document.getElementById("KomputerButton"))
@@ -45,6 +46,7 @@ function setupExtension()
             addDarkModeToggle();
             addBoardBuilder(thisGame);
             addLocalMultiplayer(thisGame);
+            addSound(thisGame);
         }
         window.onerror = function() 
         {
@@ -52,7 +54,7 @@ function setupExtension()
             stopAndReset(true);
         }
         return true;
-    };
+    }
     return false;
 }
 
@@ -106,6 +108,7 @@ function runKomputerClick(thisGame)
         if (thisGame.previewing || thisGame.player.isMyTurn())
         {
             maybeClearLastAction(thisGame);
+            maybePatchPieceFinder(thisGame);
             resetGlobals();
             disableBoardBuilder();
             styleButtonForRun();
@@ -127,10 +130,12 @@ function runKomputerClick(thisGame)
 }
 
 
-function clearIntervalsAndTimers()
+function clearIntervalsAndTimers(thisGame)
 {
-    // Clear everything but game flash intervals.
-    const thisGame = GamesByEmail.findFirstGame();
+    if (!thisGame)
+    {
+        thisGame = GamesByEmail.findFirstGame();
+    }
     const flashList = thisGame.pieces.flashList;
     const saveIds = [];
     if (flashList && flashList.constructor === Array)
@@ -162,24 +167,30 @@ function resetGlobals(resetKomputerButton = false)
     window.currentPlayerTurn = thisGame.perspectiveColor;
     window.isSmallBoard = thisGame.pieces.length === 62;
     window.isLargeBoard = !isSmallBoard;
-    window.stopKomputer = false;
-    window.lastMovedUnit = null;
-    window.movingUnitIndex = 0;
-    window.moveWave = 0;
-    window.flashIndex = 0;
-    window.flashIds = [];
     window.holdingUnits = [];
+    window.flashIds = [];
+    window.flashIndex = 0;
+    window.moveWave = 0;
+    window.movingUnitIndex = 0;
     window.waitCount = 0;
+    window.lastMovedUnit = null;
+    window.movingToAttackIndex = null;
+    window.stopKomputer = false;
     window.hasBattleBegun = false;
     window.isBombarding = false;
     window.isExploring = false;
     window.isManeuveringToAttack = false;
+    window.isMoving = false;
     window.isUnloading = false;
     window.isKomputerReady = false;
     if (resetKomputerButton)
     {
         resetKomputerButtonStyle(false);
         window.isKomputerReady = true;
+    }
+    if (komputerSound)
+    {
+        komputerSound.bellsPlayedThisTurn = false;
     }
 }
 
@@ -191,7 +202,7 @@ function runKomputer(thisGame)
         stopAndReset();
         return;
     }
-    clearIntervalsAndTimers();
+    clearIntervalsAndTimers(thisGame);
     hideEndTurnButtons();
     setTimeout(function(){ handleCurrentState(thisGame) }, 100);
 }
@@ -203,6 +214,7 @@ function handleCurrentState(thisGame)
     {
         case 0:
             console.log("Game won.");
+            playSound("win");
             setTimeout(function(){
                 thisGame.maxMoveNumber = 0;
                 window.isKomputerReady = true;
@@ -254,7 +266,6 @@ function maybeClearLastAction(thisGame)
 
 function moveUnits(thisGame)
 {
-    hideEndTurnButtons();
     const moveIntervalPeriod = 1300;
     const initialDelay = 100;
     setTimeout(function(){
@@ -287,32 +298,7 @@ function moveUnits(thisGame)
             }
             case 3: {
                 console.log("Handling all battles.");
-                if (thisGame.hasBattlesPending)
-                {
-                    const battlePiece = findNextBattle(thisGame);
-                    if (battlePiece)
-                    {
-                        window.waitCount = 0;
-                        fightBattle(thisGame, battlePiece);
-                    }
-                    else
-                    {
-                        if (waitCount > 4)
-                        {
-                            console.log("Game reports a battle pending but none found.")
-                            stopAndReset(true);
-                            return;
-                        }
-                        window.waitCount++;
-                        setTimeout(function(){ runKomputer(thisGame)}, 500);
-                    }
-                }
-                else
-                {
-                    window.waitCount = 0;
-                    window.moveWave++;
-                    runKomputer(thisGame);
-                }
+                handleBattles(thisGame);
                 break;
             }
             case 4: {
@@ -472,10 +458,41 @@ function findFrigates(thisGame, colors, pieceList)
 }
 
 
-async function endMovementPhase(thisGame)
+function handleBattles(thisGame)
+{
+    if (thisGame.hasBattlesPending)
+    {
+        const battlePiece = findNextBattle(thisGame);
+        if (battlePiece)
+        {
+            window.waitCount = 0;
+            fightBattle(thisGame, battlePiece);
+        }
+        else
+        {
+            if (waitCount > 4)
+            {
+                console.log("Game reports a battle pending but none found.")
+                stopAndReset(true);
+                return;
+            }
+            window.waitCount++;
+            setTimeout(function(){ runKomputer(thisGame)}, 500);
+        }
+    }
+    else
+    {
+        window.waitCount = 0;
+        window.moveWave++;
+        runKomputer(thisGame);
+    }
+}
+
+
+function endMovementPhase(thisGame)
 {
     // Reset movement, then restart loop to place reserves, or stop for the next player.
-    clearIntervalsAndTimers();
+    clearIntervalsAndTimers(thisGame);
     clearHoldingUnits();
     thisGame.endMyMovement();
     setTimeout(function()
@@ -507,25 +524,32 @@ async function endMovementPhase(thisGame)
 
 async function moveEachUnit(thisGame, movableUnits, intervalPeriod)
 {
-    setInterval(function()
+    setInterval(async function moveUnitInterval()
     {
         if (window.stopKomputer === true)
         {
             stopAndReset();
             return;
         }
-        if (window.hasBattleBegun || window.isBombarding || window.isExploring)
+        if (window.hasBattleBegun || window.isMoving || window.isBombarding || window.isExploring)
         {
             return;
         }
+        window.isMoving = true;
         // Check for any battle that should be fought before further moves.
-        if (thisGame.hasBattlesPending && !isUnloading)
+        if (thisGame.hasBattlesPending)
         {
+            playSound("battlePending");
             for (const piece of thisGame.pieces)
             {
                 if (piece.hasBattle(thisGame.perspectiveColor, thisGame.player.team.rulerColor))
                 {
-                    if (isNotOverkill(thisGame, piece))
+                    if (!komputerSound.bellsPlayedThisTurn && piece.hasOpponentCivilization(thisGame.perspectiveColor))
+                    {
+                        playSound("battleCiv");
+                        komputerSound.bellsPlayedThisTurn = true;
+                    }
+                    if (isUnloading || isNotOverkill(thisGame, piece))
                     {
                         continue;
                     }
@@ -542,17 +566,19 @@ async function moveEachUnit(thisGame, movableUnits, intervalPeriod)
         const unit = movableUnits[nextUnitIndex];
         const firstMoveWave = 0;
         const finalMoveWave = 2;
+        let possibleMoves = null;
+        let shouldAcceptMove = null;
         const mayMove = decideMayMove(thisGame, unit, firstMoveWave, finalMoveWave, isClickable);
         if (mayMove)
         {
-            const possibleMoves = unit.isFrigate() ? getFrigateMovables(unit) : unit.getMovables();
+            possibleMoves = unit.isFrigate() ? getFrigateMovables(unit) : unit.getMovables();
             if (possibleMoves)
             {
                 // Decide best move, or don't accept any to stay.
                 const favorOffense = shouldFavorOffense(thisGame, firstMoveWave, movableUnits.length);
-                const bestMove = decideBestMove(thisGame, possibleMoves, unit, favorOffense);
+                const bestMove = await decideBestMove(thisGame, possibleMoves, unit, favorOffense);
                 const pieceIndex = bestMove.index;
-                const shouldAcceptMove = decideMoveAcceptance(thisGame, unit, pieceIndex);
+                shouldAcceptMove = decideMoveAcceptance(thisGame, unit, pieceIndex);
                 if (shouldAcceptMove)
                 {
                     flashMoveTrail(thisGame, unit, possibleMoves, bestMove);
@@ -567,14 +593,17 @@ async function moveEachUnit(thisGame, movableUnits, intervalPeriod)
                             setTimeout(function()
                             {
                                 moveUnitSimulateMouseUp(thisGame, destinationScreenPoint);
+                                playSound("move_" + unit.type);
+                                hideEndTurnButtons();
                                 // Commit to explore after some processing time.
                                 const normalPopup = document.getElementById("Foundation_Elemental_" + gameVersion + "_overlayCommit");
                                 if ((normalPopup || document.getElementById("Foundation_Elemental_" + gameVersion + "_customizeMapDoAll")) &&
                                     !document.getElementById("Foundation_Elemental_" + gameVersion + "_endMyTurn"))
                                 {
                                     window.isExploring = true;
+                                    window.isMoving = false;
                                     window.movingUnitIndex = 0;
-                                    clearIntervalsAndTimers();
+                                    clearIntervalsAndTimers(thisGame);
                                     if (normalPopup)
                                     {
                                         thisGame.overlayCommitOnClick();
@@ -583,25 +612,17 @@ async function moveEachUnit(thisGame, movableUnits, intervalPeriod)
                                         settleExploredTerrain(thisGame, unit);
                                     }, 128);
                                 }
-                                // Make sure frigates can unload all cargo
-                                if (unit.isFrigate() && unit.hasUnloadables() && (window.moveWave === finalMoveWave) && thisGame.pieces[pieceIndex].isLand())
-                                {
-                                    window.isUnloading = true;
-                                }
-                                else
-                                {
-                                    window.isUnloading = false
-                                }
+                                decideFrigateFlags(thisGame, unit, finalMoveWave, pieceIndex);
                             }, processMouseDownUpdateTime);
                         } // End if isUnitSelected
-                        // On the rare case a valid unit isn't ready, push it to the end for later.
+                        // Rare - when unit fails to select somehow - clear past flags & references.
                         else
                         {
                             clearMovementFlags();
-                            const isValidUnit = unit && unit.piece && thisGame.pieces[unit.piece.index].units[unit.index];
+                            window.lastMovedUnit = null;
+                            const isValidUnit = (unit && unit.piece && thisGame.pieces[unit.piece.index].units[unit.index]);
                             if (isValidUnit)
                             {
-                                movableUnits.push(movableUnits.splice(window.movingUnitIndex, 1)[0]);
                                 unit.setHilite(false);
                             }
                         }   
@@ -609,7 +630,7 @@ async function moveEachUnit(thisGame, movableUnits, intervalPeriod)
                 } // End if shouldAcceptMove
             } // End if possibleMoves
         } // End if may move
-        const processMoveUpdateTime = 1100;
+        const processMoveUpdateTime = mayMove && possibleMoves && shouldAcceptMove ? intervalPeriod - 200 : 200;
         setTimeout(function(){ 
             // Ideally, the next decision is made before the next interval and allows time to process the previous.
             // In any case, it should make the right decision - worst case, it waits for the next interval.
@@ -620,6 +641,7 @@ async function moveEachUnit(thisGame, movableUnits, intervalPeriod)
 
 function clearMovementFlags()
 {
+    window.isMoving = false;
     window.isBombarding = false
     window.isExploring = false;
     window.isManeuveringToAttack = false;
@@ -694,17 +716,21 @@ function decideMayMove(thisGame, unit, firstMoveWave, finalMoveWave, canClick)
         // Empty frigates shouldn't move on the last wave.
         if (unit.isFrigate() && !unit.hasUnloadables() && window.moveWave === finalMoveWave)
         {
+            unit.movementComplete = true;
             return false;
         }
-        else if(window.moveWave > firstMoveWave)
+        if(window.moveWave > firstMoveWave)
         {
             return true;
         }
-        // Hold back artillery and cavalry who don't have an adjacent frigate and who aren't maneuvering to attack.
+        // Hold back artillery and cavalry who don't initially have an adjacent frigate.
         // By generally not moving on the first wave, they better support any battles started by infantry.
-        if ((unit.isCavalry() || unit.isArtillery()) && !hasAdjacentFrigate(thisGame, unit.piece) && !window.isManeuveringToAttack)
+        if (unit.isCavalry() || unit.isArtillery())
         {
-            return false;
+            if (unit.spacesMoved === 0 && !hasAdjacentFrigate(thisGame, unit.piece))
+            {
+                return false;
+            }
         }
     }
     if (unit.isFrigate() && !unit.hasUnloadables())
@@ -795,9 +821,31 @@ function isDoneExploring(thisGame)
 }
 
 
+function decideFrigateFlags(thisGame, unit, finalMoveWave, pieceIndex)
+{
+    if (unit.isFrigate())
+    {
+        const isFinalWave = window.moveWave === finalMoveWave;
+        if (isFinalWave && unit.hasUnloadables() && thisGame.pieces[pieceIndex].isLand())
+        {
+            window.isUnloading = true;
+        }
+        else if (unit.spacesMoved > 0 && !unit.hasUnloadables())
+        {
+            unit.movementComplete = true;
+        }
+    }
+    else
+    {
+        window.isUnloading = false
+    }
+}
+
+
 function decideHowToContinueMove(thisGame, movableUnits, unit, finalMoveWave)
 {
     hideEndTurnButtons();
+    window.isMoving = false;
     window.isManeuveringToAttack = (window.isManeuveringToAttack && !unit.movementComplete && !unit.holding) ? true : false;
     if (window.isExploring || window.isBombarding || window.isUnloading || window.isManeuveringToAttack || window.hasBattleBegun)
     {
@@ -812,7 +860,7 @@ function decideHowToContinueMove(thisGame, movableUnits, unit, finalMoveWave)
         window.isManeuveringToAttack = false; 
         unit.movementComplete = true;
         unit.holding = false;
-        clearIntervalsAndTimers();
+        clearIntervalsAndTimers(thisGame);
         bombard(thisGame, unit, unit.getBombardables());
         return;
     }
@@ -832,7 +880,7 @@ function decideHowToContinueMove(thisGame, movableUnits, unit, finalMoveWave)
         return;
     }
     // Clear and reset for next wave.
-    clearIntervalsAndTimers();
+    clearIntervalsAndTimers(thisGame);
     window.movingUnitIndex = 0;
     window.moveWave++;
     runKomputer(thisGame);
@@ -847,13 +895,13 @@ function shouldBombard(thisGame, unit, finalMoveWave)
 }
 
 
-function decideBestMove(thisGame, possibleMoves, unit, favorOffense)
+async function decideBestMove(thisGame, possibleMoves, unit, favorOffense)
 {
     let bestMoveScore = -1;
     let bestMoves = [];
     for (const possibleMove of possibleMoves)
     {
-        const possibleMoveScore = getMoveScore(thisGame, possibleMove, unit, favorOffense);
+        const possibleMoveScore = await getMoveScore(thisGame, possibleMove, unit, favorOffense);
         if (possibleMoveScore > bestMoveScore)
         {
             bestMoveScore = possibleMoveScore;
@@ -869,7 +917,7 @@ function decideBestMove(thisGame, possibleMoves, unit, favorOffense)
 }
 
 
-function getMoveScore(thisGame, possibleMove, unit, favorOffense)
+async function getMoveScore(thisGame, possibleMove, unit, favorOffense)
 {
     const piece = thisGame.pieces.findAtXY(possibleMove.x, possibleMove.y);
     const enemyColor = piece.getOpponentColor(thisGame.perspectiveColor);
@@ -889,9 +937,9 @@ function getMoveScore(thisGame, possibleMove, unit, favorOffense)
             const defendingRollCount = piece.numDefenderRolls(piece.getOpponentColor(thisGame.perspectiveColor));
             const defensivePower = (0.08 * defendingRollCount) + (0.04 * defendingUnitCount);
             // Complete any tactical maneuvers.
-            if (window.isManeuveringToAttack && piece.hasBattle(thisGame.perspectiveColor, thisGame.player.team.rulerColor))
+            if (window.isManeuveringToAttack && (piece.index === window.movingToAttackIndex))
             {
-                return piece.hasCapital(thisGame.perspectiveColor) ? 1 : piece.hasCapital(enemyColor) ? 0.99 : defendingRollCount === 1 ? 0.98 : 0.96;
+                return piece.hasCapital(thisGame.perspectiveColor) ? 1 : piece.hasCapital(enemyColor) ? 0.99 : defendingRollCount === 1 ? 0.98 : 0.975;
             }
             // Check enemy cities & towns.
             if (piece.hasOpponentCivilization(thisGame.perspectiveColor))
@@ -990,6 +1038,7 @@ function getMoveScore(thisGame, possibleMove, unit, favorOffense)
                 if (!attackVectors.includes(piece.index))
                 {
                     window.isManeuveringToAttack = true;
+                    window.movingToAttackIndex = battlePiece.index;
                     return 1;
                 }
             }
@@ -1111,7 +1160,7 @@ function getEuclideanDistanceToPoint(pointA, pointB)
 
 function guessTravelCostToEnemy(thisGame, unit, pieceOrigin)
 {    
-    const maxDistance = 64;
+    const maxDistance = 32;
     let travelCost = maxDistance;
     let possibleUnit = pieceOrigin.addUnit(thisGame.perspectiveColor, unit.type);
     possibleUnit.movementAllowance = maxDistance;
@@ -1258,14 +1307,13 @@ function calculateDefensivePower(thisGame, piece, color)
 
 function guessThreat(thisGame, piece)
 {
-    // Use temporary pennants for terrain simulation.
+    // Use temporary pennants to simulate terrain modifiers for the next players.
     const enemyColors = getEnemyColors(thisGame);
     for (const color of enemyColors)
     {
         thisGame.pieces.addNeededPennants(color, color, false);
     }
-    // Guess threat on simulated terrain.
-    let threat = guessArmyThreat(thisGame, piece, enemyColors);
+    let armyThreat = guessArmyThreat(thisGame, piece, enemyColors);
     for (const color of enemyColors)
     {
         thisGame.pieces.removePennants(color, false);
@@ -1273,70 +1321,18 @@ function guessThreat(thisGame, piece)
     const enemyFrigates = findFrigates(thisGame, enemyColors);
     for (const frigate of enemyFrigates)
     {
-        // Possible todo: count all units that can be carried to target, not just cargo & adjacents, without any double-count.
-        const hasCargo = frigate.cargo.length > 0;
-        const hasAdjacentLoadableArmy = hasAdjacentEnemyArmy(thisGame, frigate.piece);
-        if (!hasCargo && !hasAdjacentLoadableArmy)
-        {
-            continue;                
-        }
-        let amphibArmyCount = 0;
-        // If necessary, add some dummy cargo to get all possible landing points.
-        maybeAddImaginaryCargo(frigate, hasCargo);
-        const inRangePoints = getFrigateMovables(frigate);
-        removeImaginaryCargo(frigate);    
-        if (!inRangePoints)
-        {
-            continue;
-        }
-        for (const point of inRangePoints)
-        {
-            if (point.x === piece.boardPoint.x && point.y === piece.boardPoint.y)
-            {
-                if (hasCargo)
-                {
-                    amphibArmyCount += frigate.cargo.length;
-                    if (!threat.hasInfantry && frigate.carriesCargo("i"))
-                    {
-                        threat.hasInfantry = true
-                    }
-                    if (!threat.hasCavalry && frigate.carriesCargo("c"))
-                    {
-                        threat.hasCavalry = true;
-                    }
-                    if (!threat.hasArtillery && frigate.carriesCargo("a"))
-                    {
-                        threat.hasArtillery = true;
-                    }
-                }
-                const frigateCapacity = 3;
-                let adjacentEnemyArmyCount = 0;
-                let hasFullLoadPotential = false;
-                if (amphibArmyCount < frigateCapacity && hasAdjacentLoadableArmy)
-                {
-                    const adjacentPieceIndices = frigate.piece.getAdjacentIndecies(1);
-                    for (const adjacentPieceIndex of adjacentPieceIndices)
-                    {
-                        adjacentEnemyArmyCount += thisGame.pieces[adjacentPieceIndex].countOpponentMilitary(thisGame.perspectiveColor);
-                        if (adjacentEnemyArmyCount + amphibArmyCount >= frigateCapacity)
-                        {
-                            hasFullLoadPotential = true;
-                            break;
-                        }
-                    }
-                    amphibArmyCount = hasFullLoadPotential ? frigateCapacity : amphibArmyCount + adjacentEnemyArmyCount;
-                }
-                // Frigate threat confirmed, so skip other inRangePoints.
-                break; 
-            } // End if point === piece.boardPoint
-        } // End for each point
-        threat.count += amphibArmyCount;
-    } // End for each frigate
+        addPotentialCargoThreat(thisGame, piece, frigate, armyThreat);  
+    }
+    // Clear flags tagged to units during the threat assessment.
+    for (let unit of armyThreat.units)
+    {
+        unit.isThreatCounted = false;
+    }
     // Estimate likely number of rolls, based on enemy count & type.
-    const attackVectorBonus = threat.count < 2 ? 0 : threat.count < 4 ? 1 : threat.count < 6 ? 2 : threat.count < 10 ? 3 : 4;
-    const threatRollCount = attackVectorBonus + threat.hasInfantry + threat.hasCavalry + threat.hasArtillery;
+    const attackVectorBonus = armyThreat.count < 2 ? 0 : armyThreat.count < 4 ? 1 : armyThreat.count < 6 ? 2 : armyThreat.count < 10 ? 3 : 4;
+    const threatRollCount = attackVectorBonus + armyThreat.hasInfantry + armyThreat.hasCavalry + armyThreat.hasArtillery;
     // Weight to favor rolls and combine to estimate threat.
-    return ((2 * threatRollCount) + threat.count);
+    return ((2 * threatRollCount) + armyThreat.count);
 }
 
 
@@ -1360,7 +1356,7 @@ function removeImaginaryCargo(frigate)
 
 function guessArmyThreat(thisGame, piece, enemyColors)
 {
-    let threat = {count: 0, hasInfantry: false, hasCavalry : false, hasArtillery: false};
+    let threat = {count: 0, units : [], hasInfantry: false, hasCavalry : false, hasArtillery: false};
     let enemyArmyUnits = getArmyUnits(thisGame, enemyColors);
     if (!enemyArmyUnits)
     {
@@ -1377,6 +1373,8 @@ function guessArmyThreat(thisGame, piece, enemyColors)
         {
             if (point.x === piece.boardPoint.x && point.y === piece.boardPoint.y)
             {
+                unit.isThreatCounted = true;
+                threat.units.push(unit);
                 threat.count++;
                 if (!threat.hasInfantry && unit.isInfantry())
                 {
@@ -1436,6 +1434,85 @@ function guessInRangePoints(thisGame, unit)
 }
 
 
+function addPotentialCargoThreat(thisGame, targetPiece, frigate, knownThreat)
+{
+    if (isAccessibleNow(targetPiece, frigate, true))
+    {
+        knownThreat.count += frigate.cargo.length;
+        for (const item of frigate.cargo)
+        {
+            if (item === "i")
+            {
+                knownThreat.hasInfantry = true;
+            }
+            if (item === "c")
+            {
+                knownThreat.hasCavalry = true;
+            }
+            if (item === "a")
+            {
+                knownThreat.hasArtillery = true;
+            }                
+        }
+        const frigateCapacity = GamesByEmail.Viktory2Unit.CARGO_CAPACITY.f;
+        const cargoCount = frigate.cargo.length;
+        let remainingCapacity = frigateCapacity - cargoCount;
+        if (cargoCount >= frigateCapacity || remainingCapacity <= 0)
+        {
+            return;
+        }
+        const hasCargo = cargoCount > 0;
+        maybeAddImaginaryCargo(frigate, hasCargo);
+        const movablePoints = getFrigateMovables(frigate);
+        removeImaginaryCargo(frigate);
+        if (movablePoints && movablePoints.length > 0)
+        {
+            for (const movablePoint of movablePoints)
+            {
+                const reachablePiece = thisGame.pieces[movablePoint.index]
+                if (reachablePiece.isLand() && reachablePiece.hasMilitary(frigate.color))
+                {
+                    const distanceToLoadingPoint = movablePoint.spacesNeeded - 1;
+                    const loadingPoint = distanceToLoadingPoint === 0 ? frigate.piece.boardPoint : thisGame.pieces[movablePoint.retreatIndex].boardPoint;
+                    const distanceFromLoadingPointToTarget = thisGame.distanceBewteenPoints(loadingPoint, targetPiece.boardPoint);
+                    const movesRemaining = frigate.movementAllowance - frigate.spacesMoved;
+                    const canLoadAndReachTarget = (movesRemaining >= (distanceToLoadingPoint + distanceFromLoadingPointToTarget))
+                    if (canLoadAndReachTarget)
+                    {
+                        for (const unit of reachablePiece.units)
+                        {
+                            if (unit.isMilitary() && unit.color === frigate.color && !unit.isThreatCounted)
+                            {
+                                unit.isThreatCounted = true;
+                                knownThreat.units.push(unit);
+                                knownThreat.count++;
+                                if (unit.isInfantry())
+                                {
+                                    knownThreat.hasInfantry = true;
+                                }
+                                else if (unit.isArtillery())
+                                {
+                                    knownThreat.hasArtillery = true;
+                                }
+                                else if (unit.isCavalry())
+                                {
+                                    knownThreat.hasCavalry = true;
+                                }
+                            }
+                            --remainingCapacity;
+                            if (remainingCapacity <= 0)
+                            {
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+
 function getDistanceToNearestUnit(thisGame, units, originPiece)
 {
     let minDistance = Number.MAX_VALUE;
@@ -1481,7 +1558,7 @@ function decideMoveAcceptance(thisGame, unit, destinationIndex)
     }
     // Consider guarding a beseiged town vs attacking.
     const defenderCount = unit.piece.getMilitaryUnitCount(thisGame.perspectiveColor);
-    const isPinned = hasAdjacentEnemyArmy(thisGame, unit.piece);  
+    const isPinned = hasAdjacentEnemyArmy(thisGame, unit.piece) || hasAdjacentEnemyFrigate(thisGame, unit.piece);  
     if (isPinned && unit.piece.hasCivilization(thisGame.perspectiveColor))
     {
         // Going to own capital or from own capital to fight is always approved.
@@ -1665,6 +1742,7 @@ function bombard(thisGame, unit, bombardablePoints)
         const targetPoint = getBestTargetPoint(thisGame, bombardablePoints);
         const targetPiece = thisGame.pieces.findAtPoint(targetPoint);
         const targetScreenPoint = targetPiece.$screenRect.getCenter();
+        playSound("bombard_" + unit.type);
         setTimeout(function(){
             const hasFired = bombardUnitsSimulateMouseUp(thisGame, targetScreenPoint);
             if (hasFired)
@@ -1758,17 +1836,30 @@ function fightBattle(thisGame, battlePiece, isReserveBattle = false)
         return;
     }
     window.hasBattleBegun = true;
-    window.lastMovedUnit = null;
     battlePiece.setBorder(true);
-    clearIntervalsAndTimers();
+    clearIntervalsAndTimers(thisGame);
     commitExploration(thisGame);
     hideEndTurnButtons();
+    playSound("battleRoll");
+    const anyColor = -1;
+    if (battlePiece.hasCavalry(anyColor))
+    {
+        playSound("battleCavalry");
+    }
+    if (battlePiece.hasArtillery(anyColor) || battlePiece.hasFrigate(anyColor))
+    {
+        playSound("battleArtillery");
+    }
     const markBattleDelay = 500;
     setTimeout(function()
     {
         selectBattle(thisGame, battlePiece);
         const rollDelay = 600;
         setTimeout(function roll(){
+            if (thisGame.pieces[battlePiece.index].hasArtillery(anyColor))
+            {
+                playSound("battleArtillery");
+            }
             thisGame.overlayCommitOnClick();
             setTimeout(replaceBattleMessage, 100);
             const applyHitsDelay = 600;
@@ -1786,10 +1877,9 @@ function fightBattle(thisGame, battlePiece, isReserveBattle = false)
                     }
                 }
                 // Roll again or close after review.
-                const battleReviewDelay = 1600;
-                setTimeout(function handleRollResult(){
-                    const hasNotWonGame = thisGame.movePhase !== 0; 
-                    if (hasNotWonGame)
+                const battleReviewDelay = 1700;
+                setTimeout(function handleRollResult(){ 
+                    if (!isWon(thisGame))
                     {
                         // Caution - this is a "gotcha" bug waiting to happen, as it happened twice already.
                         // Don't shorten below to: battlePiece.battleOkClick(thisGame.perspectiveColor);
@@ -1807,10 +1897,18 @@ function fightBattle(thisGame, battlePiece, isReserveBattle = false)
                                 const rollRequired = document.getElementById("Foundation_Elemental_" + gameVersion + "_overlayCommit");
                                 if (rollRequired)
                                 {
-                                    roll();
+                                    playSound("battleRollShort");
+                                    setTimeout(function reroll(){ roll() }, 300);
                                 }
                                 else
                                 {
+                                    const piece = thisGame.pieces[battlePiece.index];
+                                    const hasFriendlyMilitary = piece.hasMilitary(thisGame.perspectiveColor);
+                                    const hasCapturedCapital = hasFriendlyMilitary && piece.hasOpponentCapital(thisGame.perspectiveColor);
+                                    if (hasCapturedCapital && !isWon(thisGame))
+                                    {
+                                        playSound("lose");
+                                    }
                                     if (isReserveBattle)
                                     {
                                         // Clear the reserve interval now to prevent the Komputer from replaying a reserve battle.
@@ -1840,9 +1938,14 @@ function fightBattle(thisGame, battlePiece, isReserveBattle = false)
                                         // After battle
                                         setTimeout(function()
                                         {
-                                            window.hasBattleBegun = false; 
-                                            runKomputer(thisGame) 
-                                        }, 600);
+                                            ensureDefenderPennant(thisGame, battlePiece.index);
+                                            ensureMovementComplete(thisGame, battlePiece.index);
+                                            thisGame.update();
+                                            setTimeout(function(){
+                                                window.hasBattleBegun = false; 
+                                                runKomputer(thisGame) 
+                                            }, 200)
+                                        }, 800);
                                     }
                                 }
                             }, reRollDelay);
@@ -1865,6 +1968,7 @@ function fightBattle(thisGame, battlePiece, isReserveBattle = false)
                     // Game won. Reset for start.
                     else
                     {
+                        playSound("win");
                         thisGame.maxMoveNumber = 0;
                         window.isKomputerReady = true;
                         resetKomputerButtonStyle(true);
@@ -1875,6 +1979,13 @@ function fightBattle(thisGame, battlePiece, isReserveBattle = false)
         }, rollDelay);
     }, markBattleDelay);
 }
+
+
+function isWon(thisGame)
+{
+    return thisGame.movePhase === 0;
+}
+
 
 
 function commitExploration(thisGame)
@@ -1940,9 +2051,34 @@ function applyHits(thisGame, pieceIndex, battleData, isBombarding = false)
 }
 
 
+function ensureMovementComplete(thisGame, pieceIndex)
+{
+    const piece = thisGame.pieces[pieceIndex];
+    for (let unit of piece.units)
+    {
+        if (unit.isMilitary())
+        {
+            unit.spacesMoved = unit.movementAllowance;
+            unit.movementComplete = true;
+        }
+    }
+}
+
+
+function ensureDefenderPennant(thisGame, pieceIndex)
+{
+    const piece = thisGame.pieces[pieceIndex];
+    const opponentUnit = piece.findOpponent(thisGame.perspectiveColor);
+    if (opponentUnit)
+    {
+        piece.addUnit(opponentUnit.color,"p").placedThisTurn=false;
+    }
+}
+
+
 async function placeReserves(thisGame)
 {
-    clearIntervalsAndTimers();
+    clearIntervalsAndTimers(thisGame);
     window.reserveIntervalId = await setInterval(placeReserveUnit, 1200, thisGame);
 }
 
@@ -1980,7 +2116,8 @@ function placeReserveUnit(thisGame)
     {
         // Place reserve unit.
         const movingUnitType = thisGame.pieces.getNewPiece().movingUnit.type;
-        const destinationBoardPoint = (movingUnitType === "t" || movingUnitType === "y") ? (
+        const isCivilization = (movingUnitType === "t" || movingUnitType === "y")
+        const destinationBoardPoint = isCivilization ? (
             getBestBuildable(thisGame) ) : (
             getBestReservable(thisGame, movingUnitType, controlsCapital) );
         const destinationScreenPoint = thisGame.screenRectFromBoardPoint(destinationBoardPoint).getCenter();
@@ -1990,14 +2127,14 @@ function placeReserveUnit(thisGame)
         if (document.getElementById("Foundation_Elemental_" + gameVersion + "_overlayCommit") &&
             !document.getElementById("Foundation_Elemental_" + gameVersion + "_endMyTurn"))
         {
-            clearIntervalsAndTimers();
+            clearIntervalsAndTimers(thisGame);
             settleCivExploredTerrain(thisGame, destinationBoardPoint);
         }
     }
     // End placing reserves. 
     else
     {
-        clearIntervalsAndTimers();
+        clearIntervalsAndTimers(thisGame);
         ensureValidBoard(thisGame);
         maybeRecallTroops(thisGame);
         maybeRecallFrigatesToPort(thisGame);
@@ -2068,7 +2205,7 @@ function ensureValidBoard(thisGame)
 
 function endReservePhase(thisGame)
 {
-    clearIntervalsAndTimers();
+    clearIntervalsAndTimers(thisGame);
     if (window.currentPlayerTurn === thisGame.perspectiveColor)
     {
         thisGame.moveToNextPlayer();
@@ -3024,6 +3161,7 @@ function placeCapital(thisGame)
                                 }
                                 destinationScreenPoint = thisGame.pieces[pieceIndex].$screenRect.getCenter();
                                 thisGame.placeReserveOnMouseUp(destinationScreenPoint);
+                                playSound("buildCiv");
                                 commitExploration(thisGame);
                                 setTimeout(function(){
                                     const waterPopup = document.getElementById("Foundation_Elemental_" + gameVersion + "_waterSwap");
@@ -3036,6 +3174,7 @@ function placeCapital(thisGame)
                                         thisGame.customizeMapDoAll(true);
                                         element = document.querySelector("#Foundation_Elemental_" + gameVersion + "_reserve_0");
                                         thisGame.reserveOnMouseDown(element, thisGame.event("reserveOnMouseDown(this,event,#)"), 0);
+                                        //playSound("place_" + i); 
                                         thisGame.placeReserveOnMouseUp( destinationScreenPoint );
                                         thisGame.endMyTurn();
                                         setTimeout(function(){
@@ -3994,7 +4133,7 @@ function moveUnitSimulateMouseUp(thisGame, screenPoint)
                 // Check for blocking frigate at invasion origin before unload.
                 if (invasionOrigin.hasRollingOpponent(thisGame.perspectiveColor))
                 {
-                    clearIntervalsAndTimers();
+                    clearIntervalsAndTimers(thisGame);
                     clearMovementFlags();
                     let log=thisGame.logEntry(8,oldPiece.index,oldPiece.boardValue,targetPiece.index,targetPiece.boardValue,movingPiece.movingUnit.getActiveCargoType(),movingPiece.movingUnit.type);
                     movingPiece.movingUnit.piece.updateUnitDisplay();
@@ -4181,6 +4320,77 @@ function patchPiecePrototype()
         }
         return new Array();
     }
+
+    GamesByEmail.Viktory2Piece.prototype.moveUnit = function(unit)
+    {
+        unit.piece.removeUnit(unit);
+        unit.piece=this;
+        if (!unit.movementComplete || this.hasEnemy(unit.color,unit.rulerColor))
+        {
+            for (var i=this.units.length;i>0;i--)
+                (this.units[i]=this.units[i-1]).index=i;
+            (this.units[0]=unit).index=0;
+        }
+        else
+        {
+            unit.index=this.units.length;
+            this.units.push(unit);
+        }
+        if (!unit.movementComplete && !unit.piece.hasEnemy(unit.color, unit.rulerColor))
+        {
+            window.lastMovedUnit = unit;
+        }
+    }
+}
+
+
+// Keep the board vertical regardless of the current player color.
+function patchPerspective(thisGame)
+{
+    const targetPrefix = "boardResourceName";
+    for (let key in thisGame.constructor.resourcePack)
+    {
+        if (key.substring(0,targetPrefix.length) === targetPrefix)
+        {        
+            if (thisGame.constructor.resourcePack[key].includes("H"))
+            {
+                thisGame.constructor.resourcePack[key] = thisGame.constructor.resourcePack[key].substring(0,thisGame.constructor.resourcePack[key].length-1) + "V";
+            }
+        }
+    }
+}
+
+
+// Performance boost, especially on large maps - use a hashmap when looking up a piece by xy coordinates. 
+function maybePatchPieceFinder(thisGame)
+{
+    let isDirty = false; 
+    if (!window.cachePiecesLength || cachePiecesLength !== thisGame.pieces.length)
+    {
+        isDirty = true;
+    }
+    if (isDirty)
+    {
+        window.cachePiecesLength = thisGame.pieces.length;
+        window.pieceMap = new Map();
+        const maxActivePieceIndex = thisGame.pieces.length - 1;
+        for (let i = 0; i < maxActivePieceIndex; i++)
+        {
+            const piece = thisGame.pieces[i];
+            const key = piece.boardPoint.x + '' + piece.boardPoint.y;
+            pieceMap.set(key, piece.index)
+        }
+        thisGame.pieces.findAtXY = function(x,y)
+        {
+            const key = x + '' + y;
+            if (!pieceMap.has(key))
+            {
+                return null;
+            } 
+            const pieceIndex = pieceMap.get(key);
+            return this[pieceIndex];
+        }
+    }
 }
 
 
@@ -4238,31 +4448,10 @@ function showKomputerControls()
 }
 
 
-// Patch adds check for objects before accessing.
 // Overwrites original codebase function.
 function patchGamePrototype()
 {
-    GamesByEmail.Viktory2Piece.prototype.moveUnit = function(unit)
-    {
-        unit.piece.removeUnit(unit);
-        unit.piece=this;
-        if (!unit.movementComplete || this.hasEnemy(unit.color,unit.rulerColor))
-        {
-            for (var i=this.units.length;i>0;i--)
-                (this.units[i]=this.units[i-1]).index=i;
-            (this.units[0]=unit).index=0;
-        }
-        else
-        {
-            unit.index=this.units.length;
-            this.units.push(unit);
-        }
-        if (!unit.movementComplete && !unit.piece.hasEnemy(unit.color, unit.rulerColor))
-        {
-            window.lastMovedUnit = unit;
-        }
-    }
-
+    // Adds check for objects before accessing.
     GamesByEmail.Viktory2Game.prototype.redeployUnitsMouseUp = function(screenPoint)
     {
         this.onMouseMove=null;
@@ -4335,6 +4524,7 @@ function patchGamePrototype()
         return true;
     }
 
+    // Modified to allow optional border visual when setting target points.
     GamesByEmail.Viktory2Game.prototype.setTargetPoints = function (points, shouldSetBorder = true)
     {
         this.targetPoints=points;
@@ -4359,6 +4549,416 @@ function patchGamePrototype()
            this.targetPointsAllLand=false;
         return this.targetPoints && this.targetPoints.length>0;
     }
+
+    // Modified to play sound on placing capital.
+    GamesByEmail.Viktory2Game.prototype.placeCapitalMouseDown = function(screenPoint)
+    {
+       this.maybeResetReservesByMouseUp();
+       this.maybeHideOverlay();
+       var point=this.boardPointFromScreenPoint(screenPoint);
+       if (this.isTargetPoint(point))
+       {
+          playSound("buildCiv");
+          var movingPiece=this.pieces.getNewPiece();
+          movingPiece.setMovingUnit(null);
+          var piece=this.pieces.findAtPoint(point);
+          piece.addUnit(this.player.team.color,"C");
+          piece.addUnit(this.player.team.color,"t");
+          piece.addUnit(this.player.team.color,"i");
+          piece.updateUnitDisplay();
+          this.setTargetPoints(null);
+          this.pushMove("Place Capital",this.logEntry(4,piece.index,piece.boardValue,"C","t","i"),piece,"processPlaceCapitalMove",true);
+       }
+       this.update();
+    }
+
+    // Modified to play sound on map customization.
+    GamesByEmail.Viktory2Game.prototype.customizeMapOnMouseUp = function(screenPoint)
+    {
+       this.onMouseMove=null;
+       this.onMouseUp=null;
+       var movingPiece=this.pieces.getNewPiece();
+       movingPiece.setVisibility(true);
+       var boardPoint=this.boardPointFromScreenPoint(screenPoint=this.constrainPoint(screenPoint));
+       var targetPiece=this.pieces.findAtPoint(boardPoint);
+       if (targetPiece && targetPiece.boardValue=="l")
+       {
+          playSound("customizeMap");  
+          targetPiece.setValue(movingPiece.value);
+          this.maybeUndarkPiece(targetPiece);
+          var origNum=this.getNumMapCustomizations();
+          this.removeMapCustomizationDataValue(movingPiece.value);
+          this.pushMapCustomizationMove(targetPiece,[targetPiece.index,movingPiece.value],origNum);
+       }
+       this.update();
+    }
+
+    // Modified to play sound on bombard.
+    GamesByEmail.Viktory2Game.prototype.processBombardUnitMove = function(piece)
+    {
+       this.maybeReleaseFromVassalage(piece);
+       var movingPiece=this.pieces.getNewPiece();
+       movingPiece.setVisibility(true);
+       movingPiece.setMovingUnit(null);
+       if (isKomputerReady)
+       {
+            playSound("bombard_" + this.bombardingUnit.type);
+       }
+       this.bombardingUnit.setHilite(false);
+       this.bombardingUnit.hasBombarded=true;
+       this.bombardingUnit.noBombard=true;
+       this.bombardingUnit.movementComplete=true;
+       this.bombardingUnit.piece.updateUnitDisplay();
+       this.setTargetPoints(null);
+       var attackerRolls=[this.dieRoll()];
+       var hits=this.countHitsForLog(attackerRolls,this.getHitThreshold(this.player.team.color));
+       this.addAdditionalLogEntry(this.logEntry(50+hits.offset,this.player.team.color,1,hits.tactical,hits.nonTactical,hits.missed,hits.suppressed,attackerRolls.length,attackerRolls,hits.threshold));
+       this.setBattleData(piece,-1,attackerRolls[0]);
+    }
+
+   // Modified to play sound on moving unit.
+   GamesByEmail.Viktory2Game.prototype.moveUnitsMouseUp = function(screenPoint)
+   {
+      this.onMouseMove=null;
+      this.onLeftMouseUp=null;
+      if (this.lastLoadableUnit)
+      {
+         this.lastLoadableUnit.setHilite(false);
+         this.lastLoadableUnit=null;
+      }
+      var movingPiece=this.pieces.getNewPiece();
+      var boardPoint=this.boardPointFromScreenPoint(screenPoint=this.constrainPoint(screenPoint));
+      if (this.isTargetPoint(boardPoint))
+      {
+         playSound("move_" + movingPiece.movingUnit.type);
+         window.lastTargetPoint = boardPoint;
+         var targetPiece=this.pieces.findAtPoint(boardPoint);
+         if (movingPiece.movingUnit.isLandUnit() &&
+             targetPiece.isWater())
+         {
+            var oldPiece=movingPiece.movingUnit.piece;
+            var loadableUnit=this.militaryUnitFromScreenPoint(screenPoint,null,movingPiece.movingUnit.color,movingPiece.movingUnit.rulerColor,false,false,true);
+            var log=this.logEntry(7,oldPiece.index,oldPiece.boardValue,targetPiece.index,targetPiece.boardValue,movingPiece.movingUnit.type,loadableUnit.type);
+            loadableUnit.loadCargo(movingPiece.movingUnit);
+            movingPiece.setMovingUnit(null);
+            oldPiece.updateUnitDisplay();
+            loadableUnit.piece.updateUnitDisplay();
+            this.setTargetPoints(null);
+            var nltd=this.nothingLeftToDo();
+            this.pushMove("Load",log,targetPiece,"processMoveUnitMove",nltd,nltd ? "commitEndOfTurn" : null);
+         }
+         else
+            if (movingPiece.movingUnit.isFrigate() &&
+                targetPiece.isLand())
+            {
+               var oldPiece=movingPiece.movingUnit.piece;
+               var log=this.logEntry(8,oldPiece.index,oldPiece.boardValue,targetPiece.index,targetPiece.boardValue,movingPiece.movingUnit.getActiveCargoType(),movingPiece.movingUnit.type);
+               movingPiece.movingUnit.unloadCargo(targetPiece);
+               movingPiece.movingUnit.piece.updateUnitDisplay();
+               movingPiece.setMovingUnit(null);
+               targetPiece.updateUnitDisplay();
+               this.setTargetPoints(null);
+               var nltd=this.nothingLeftToDo();
+               this.pushMove("Unload",log,targetPiece,"processMoveUnitMove",nltd,nltd ? "commitEndOfTurn" : null);
+            }
+            else
+            {
+               var oldPiece=movingPiece.movingUnit.piece;
+               var tp=this.getTargetPoint(boardPoint);
+               var log=this.logEntry(9,oldPiece.index,oldPiece.boardValue,targetPiece.index,targetPiece.boardValue,movingPiece.movingUnit.type,tp.spacesNeeded);
+               movingPiece.movingUnit.moveTo(targetPiece,tp.spacesNeeded,tp.retreatIndex);
+               movingPiece.setMovingUnit(null);
+               oldPiece.updateUnitDisplay();
+               targetPiece.updateUnitDisplay();
+               this.setTargetPoints(null);
+               var nltd=this.nothingLeftToDo();
+               this.pushMove("Move",log,targetPiece,"processMoveUnitMove",nltd,nltd ? "commitEndOfTurn" : null);
+            }
+      }
+      else
+      {
+         this.setTargetPoints(null);
+         this.onLeftMouseUp=null;
+         this.onMouseMove="moveBombardUnitsMouseMove";
+         this.onMouseOver="moveBombardUnitsMouseMove";
+         this.onMouseOut="moveBombardUnitsMouseOut";
+         movingPiece.movingUnit.setVisibility(true);
+         var piece=movingPiece.movingUnit.piece;
+         movingPiece.setMovingUnit(null);
+         if (piece.boardPoint.equals(boardPoint) &&
+             piece.hasBattle(this.player.team.color,this.player.team.rulerColor))
+         {
+            piece.setBorder(true);
+            this.battleIndex=piece.index;
+            this.pushMove("Battle",this.logEntry(6,piece.index,piece.boardValue,piece.getOpponentColor(this.player.team.color)),piece,piece.hasPreBattle(this.player.team.color) ? "processPreBattleMove" : "processStartBattleMove",true,"beginBattle","cancel");
+         }
+      }
+      this.update();
+   }
+
+   // Modified to play sound on placing reserves.
+   GamesByEmail.Viktory2Game.prototype.placeReserveOnMouseUp = function(screenPoint)
+   {
+      this.showReserveMessage();
+      var e=this.getElement("mouse");
+      if (e.releaseCapture)
+         e.releaseCapture();
+      var boardPoint=screenPoint ? this.boardPointFromScreenPoint(this.constrainPoint(screenPoint)) : null;
+      var movingPiece=this.pieces.getNewPiece();
+      var movingUnit=movingPiece.movingUnit;
+      movingPiece.setMovingUnit(null);
+      this.onMouseMove=null;
+      this.onMouseUp=null;
+      if (this.isTargetPoint(boardPoint))
+      {
+        if (movingUnit.isMilitary(movingUnit.color))
+        {
+            playSound("place_" + movingUnit.type);
+        }
+        else
+        {
+            playSound("buildCiv");
+        }
+         if (this.movePhase<6)
+            this.pieces.setAllMilitaryMoveComplete(movingUnit.color,true);
+         var target=this.pieces.findAtPoint(boardPoint);
+         var log;
+         if (movingUnit.isTown())
+         {
+            var targetCiv=target.findCivilization(movingUnit.color);
+            if (targetCiv)
+            {
+               targetCiv.upgradeToCity();
+               log=this.logEntry(24,target.index,target.boardValue,movingUnit.color,movingUnit.type,targetCiv.type);
+            }
+            else
+            {
+               movingUnit=target.addUnit(movingUnit.color,movingUnit.type);
+               log=this.logEntry(23,target.index,target.boardValue,movingUnit.color,movingUnit.type);
+            }
+            this.player.team.reserveUnits=this.getReserveUnitTypes(this.player.team.color);
+         }
+         else
+         {
+            movingUnit=target.addUnit(movingUnit.color,movingUnit.type);
+            movingUnit.movementComplete=true;
+            this.player.team.reserveUnits=this.player.team.reserveUnits.substr(0,this.movingReserveIndex)+this.player.team.reserveUnits.substr(this.movingReserveIndex+1);
+         }
+         target.updateUnitDisplay();
+         if (movingUnit.isFrigate())
+         {
+            var civ=this.pieces.findAtPoint(this.getTargetPlaceHolderPoint(boardPoint)).findCivilization(movingUnit.color);
+            civ.tookReserveUnit(movingUnit.type);
+            log=this.logEntry(22,civ.piece.index,civ.piece.boardValue,civ.color,civ.type,movingUnit.type,target.index,target.boardValue);
+         }
+         else
+            if (!movingUnit.isTown())
+            {
+               var civ=target.findCivilization(movingUnit.color);
+               civ.tookReserveUnit(movingUnit.type);
+               log=this.logEntry(21,civ.piece.index,civ.piece.boardValue,civ.color,civ.type,movingUnit.type);
+            }
+         this.setTargetPoints(null);
+         if (this.movePhase==5)
+            this.movePhase=11;
+         var nltd=this.nothingLeftToDo(true);
+         this.pushMove("Place Reserve",log,target,"processPlaceReserveUnitMove",nltd,nltd ? "commitEndOfTurn" : null);
+      }
+      else
+      {
+         this.setTargetPoints(null);
+         if (this.movingReserveIndex>=-1)
+            this.getElement("reserve_"+this.movingReserveIndex).style.visibility="visible";
+      }
+      this.update();
+   }
+
+   // Modified to play sound on check for battles pending.
+   GamesByEmail.Viktory2Game.prototype.anyMovesOrBattlesLeft = function()
+   {
+    if (isKomputerReady)
+    {
+        let thisGame = this;
+        setTimeout(function()
+        {
+            if (thisGame.hasBattlesPending)
+            {
+                const lastTargetPiece = thisGame.pieces.findAtPoint(window.lastTargetPoint);
+                if (lastTargetPiece.hasBattle(thisGame.player.team.color,thisGame.player.team.rulerColor))
+                {
+                    playSound("battlePending");
+                }
+            }
+        }, 600);
+    }
+    return (this.hasBattlesPending ||
+              (this.movePhase==5 &&
+               (this.pieces.anyMoversLeft(this.player.team.color) ||
+                this.pieces.anyBombardersLeft(this.player.team.color))));
+   }
+
+   // Modified to play sound on pre-battle artillery.
+   GamesByEmail.Viktory2Game.prototype.processPreBattleMove = function(piece)
+   {
+      this.maybeReleaseFromVassalage(piece);
+      var opponentColor=piece.getOpponentColor(this.player.team.color);
+      piece.addUnit(opponentColor,"p");
+      this.setTargetPoints(null);
+      var numAttackerGuns=piece.getArtilleryUnitList(this.player.team.color).length;
+      var numDefenderGuns=this.playOptions.defendingArtilleryPrefire ? piece.getArtilleryUnitList(opponentColor).length : 0;
+      var attackerRolls=numAttackerGuns>0 ? this.diceRolls(numAttackerGuns) : null;
+      var defenderRolls=numDefenderGuns>0 ? this.diceRolls(numDefenderGuns) : null;
+      this.addAdditionalLogEntry(this.logEntry(12,piece.index,piece.boardValue,numAttackerGuns,opponentColor,numDefenderGuns));
+      if (attackerRolls)
+      {
+         var hits=this.countHitsForLog(attackerRolls,this.getHitThreshold(this.player.team.color));
+         this.addAdditionalLogEntry(this.logEntry(50+hits.offset,this.player.team.color,numAttackerGuns,hits.tactical,hits.nonTactical,hits.missed,hits.suppressed,attackerRolls.length,attackerRolls,hits.threshold));
+      }
+      if (defenderRolls)
+      {
+         var hits=this.countHitsForLog(defenderRolls,this.getHitThreshold(opponentColor));
+         this.addAdditionalLogEntry(this.logEntry(60+hits.offset,opponentColor,numDefenderGuns,hits.tactical,hits.nonTactical,hits.missed,hits.suppressed,defenderRolls.length,defenderRolls,hits.threshold));
+      }
+      this.setBattleData(piece,0,attackerRolls,defenderRolls,piece.collectRetreatIndices(this.player.team.color));
+      if (attackerRolls || defenderRolls)
+      {
+        if (isKomputerReady)
+        {
+            playSound("battleRoll");
+            const anyColor = -1;
+            if (piece.hasCavalry(anyColor))
+            {
+                playSound("battleCavalry");
+            }
+            if (piece.hasArtillery(anyColor) || piece.hasFrigate(anyColor))
+            {
+                playSound("battleArtillery");
+            }
+        }
+      }
+   }
+
+   // Modified to play sound on battle start.
+   GamesByEmail.Viktory2Game.prototype.processStartBattleMove = function(piece)
+   {
+      this.maybeReleaseFromVassalage(piece);
+      this.processContinueBattleMove(piece,piece.collectRetreatIndices(this.player.team.color),true);
+    if (isKomputerReady)
+    {
+        playSound("battleRollShort");
+        const anyColor = -1;
+        if (piece.hasCavalry(anyColor))
+        {
+            playSound("battleCavalry");
+        }
+        if (piece.hasArtillery(anyColor) || piece.hasFrigate(anyColor))
+        {
+            playSound("battleArtillery");
+        }
+    }
+   }
+
+   // Modified to play sound on battle continue.
+   GamesByEmail.Viktory2Game.prototype.processContinueBattleMove = function(piece,retreatIndices,startingBattle)
+   {
+    if (isKomputerReady)
+    {
+        playSound("battleRollShort");
+        const anyColor = -1;
+        if (piece.hasCavalry(anyColor))
+        {
+            playSound("battleCavalry");
+        }
+        if (piece.hasArtillery(anyColor) || piece.hasFrigate(anyColor))
+        {
+            playSound("battleArtillery");
+        }
+    }
+    if (!retreatIndices)
+        retreatIndices=piece.retreatIndices;
+    var opponentColor=piece.getOpponentColor(this.player.team.color);
+    if (this.movePhase!=9 &&
+        !piece.hasOpponentPennant(this.player.team.color))
+        piece.addUnit(opponentColor,"p");
+    var rolls=piece.getRolls(this.player.team.color);
+    
+    var rollingAttackers=piece.countRollingUnits(this.player.team.color);
+    var rollingDefenders=piece.countRollingUnits(opponentColor);
+    this.addAdditionalLogEntry(this.logEntry(startingBattle ? 13 : 14,piece.index,piece.boardValue,rollingAttackers,opponentColor,rollingDefenders));
+    
+    var attackerHits=rolls.attacker.length>0 ? this.countHitsForLog(rolls.attacker,rolls.attackerHitThreshold) : null;
+    var defenderHits=rolls.defender.length>0 ? this.countHitsForLog(rolls.defender,rolls.defenderHitThreshold,attackerHits) : null;
+    
+    if (attackerHits)
+        this.addAdditionalLogEntry(this.logEntry(50+attackerHits.offset,this.player.team.color,rollingAttackers,attackerHits.tactical,attackerHits.nonTactical,attackerHits.missed,attackerHits.suppressed,rolls.attacker.length,rolls.attacker,attackerHits.threshold));
+    if (defenderHits)
+        this.addAdditionalLogEntry(this.logEntry(60+defenderHits.offset,opponentColor,rollingDefenders,defenderHits.tactical,defenderHits.nonTactical,defenderHits.missed,defenderHits.suppressed,rolls.defender.length,rolls.defender,defenderHits.threshold));
+    this.setBattleData(piece,1,rolls.attacker,rolls.defender,retreatIndices);
+   }
+
+   // Modified to play sound on win.
+   GamesByEmail.Viktory2Game.prototype.checkForWin = function(committing)
+   {
+      var possibleWinner;
+      for (var i=0;i<this.teams.length;i++)
+         if (this.teams[i].status.inPlay &&
+             !this.teams[i].status.resigned &&
+             this.teams[i].rulerColor<0)
+         {
+            possibleWinner=this.teams[i];
+            break;
+         }
+      var anyOtherStanding=false;
+      for (var i=0;i<this.teams.length;i++)
+         if (i!=possibleWinner.index &&
+             this.teams[i].status.inPlay &&
+             !this.teams[i].status.resigned &&
+             this.teams[i].rulerColor!=possibleWinner.color)
+         {
+            anyOtherStanding=true;
+            break;
+         }
+      if (!anyOtherStanding)
+      {
+         if (committing)
+        {
+            this.setEnded(possibleWinner);
+            if (isKomputerReady)
+            {
+                playSound("win");
+            }
+        }
+         return true;
+      }
+      return false;
+   }
+
+   // Modified to play sound on losing a capital.
+   GamesByEmail.Viktory2Game.prototype.processBattleCompleteMove = function(piece)
+   {
+    if (piece)
+    {
+        if (isKomputerReady)
+        {
+            const opponentCapital = piece.findOpponentCapital(this.perspectiveColor);
+            if (opponentCapital)
+            {
+                // Play sound when game is not won and a player loses the capital. 
+                if (!this.checkForWin(false) && !this.doesColorControlTheirCapital(opponentCapital.color))
+                {
+                    playSound("lose");
+                }
+            }
+        }
+    }
+      if (!this.checkForWin(true) &&
+          this.movePhase==12 &&
+          !this.hasBattlesPending)
+         return this.moveToNextPlayer();
+      return true;
+   }
+
+   // End patch for GamesByEmail.Viktory2Game.prototype.
 }
 
 
@@ -4368,8 +4968,11 @@ function styleGameMessageBox(thisGame)
     {
         let messageReadBox = document.getElementById("Foundation_Elemental_" + gameVersion + "_gameMessageRead");
         let messageWriteBox = document.getElementById("Foundation_Elemental_" + gameVersion + "_gameMessageWrite");
-        messageReadBox.style.height = 164;
-        messageWriteBox.style.height = 72
+        if (messageReadBox && messageWriteBox)
+        {
+            messageReadBox.style.height = 164;
+            messageWriteBox.style.height = 72;
+        }
     }
 }
 
@@ -4399,8 +5002,8 @@ function addRunButton(text, onclick, pointerToGame) {
 
 
 function addStopButton(text, onclick)
-{
-    let style = {position: 'absolute', top: getStopButtonTop(), left:'56px', 'z-index': '9999', "-webkit-transition-duration": "0.2s", "transition-duration": "0.2s", overflow: 'hidden', width: '64px', 'font-size': '10px'}
+{  // '56px'
+    let style = {position: 'absolute', top: getStopButtonTop(), left:'24px', 'z-index': '9999', "-webkit-transition-duration": "0.2s", "transition-duration": "0.2s", overflow: 'hidden', width: '64px', 'font-size': '10px'}
     let button = document.createElement('button'), btnStyle = button.style
     document.body.appendChild(button) // For now, this works well enough.
     button.setAttribute("class", "button_stopKomputer");
@@ -4432,7 +5035,7 @@ function addDarkModeToggle()
         console.log("Dark Mode: " + this.checked);
         maybeStylePage(this.checked);
     });
-	let style = {position: 'absolute', top: getDarkModeToggleTop(), left:'128px', 'z-index': '9999'};
+	let style = {position: 'absolute', top: getDarkModeToggleTop(), left:'88px', 'z-index': '9999'}; 
 	let toggleStyle = toggle.style;
 	Object.keys(style).forEach(key => toggleStyle[key] = style[key]);
     document.body.appendChild(toggle);
@@ -4440,8 +5043,8 @@ function addDarkModeToggle()
     let toggleLabel = document.createElement("label");
     toggleLabel.id = "DarkModeLabel";
     toggleLabel.htmlFor = "DarkModeToggle";
-    toggleLabel.innerText = "Dark";
-    style = {position: 'absolute', top: getDarkModeToggleLabelTop(), left:'147px', 'z-index': '9999', 'font-size': '8px'};
+    toggleLabel.innerText = "Dark";  
+    style = {position: 'absolute', top: getDarkModeToggleLabelTop(), left:'107px', 'z-index': '9999', 'font-size': '8px'};
     Object.keys(style).forEach(key => toggleLabel.style[key] = style[key]);
     document.body.appendChild(toggleLabel);
 }
@@ -4561,16 +5164,22 @@ function resetButtonPositions(visible = true)
     let boardBuilder = document.getElementById("BoardBuilder");
     let boardBuilderToggle = document.getElementById("BoardBuilderToggle");
     let multiplayerForm = document.getElementById("MultiplayerForm");
+    let soundToggle = document.getElementById("SoundToggle");
+    let soundToggleLabel = document.getElementById("SoundToggleLabel");
     if (visible)
     {
         runButton.style.top = getRunButtonTop();
         stopButton.style.top = getStopButtonTop();
         darkModeToggle.style.top = getDarkModeToggleTop();
         darkModeLabel.style.top = getDarkModeToggleLabelTop();
+        soundToggle.style.top = getDarkModeToggleTop();
+        soundToggleLabel.style.top = getDarkModeToggleLabelTop();
         runButton.style.visibility = ""; 
         stopButton.style.visibility = "";
         darkModeToggle.style.visibility = ""; 
         darkModeLabel.style.visibility = ""; 
+        soundToggle.style.visibility = "";
+        soundToggleLabel.style.visibility = "";
         if (boardBuilder && boardBuilderToggle)
         {
             boardBuilder.style.top = getBoardBuilderTop();
@@ -4607,6 +5216,8 @@ function resetButtonPositions(visible = true)
         {
             multiplayerForm.style.visibility = "hidden";   
         }
+        soundToggle.style.visibility = "hidden";
+        soundToggleLabel.style.visibility = "hidden";
     }
 }
 
@@ -5373,7 +5984,7 @@ function addMultiplayerInputListener(radioButton)
             const formIndex = Foundation.$registry.length - 1;
             const playButton = document.getElementById("Foundation_Elemental_" + formIndex + "_PlayButton");
             if (playButton)
-            {
+            {  
                 setupNextGamePlayers(playerCount, formIndex);
             }
         }
@@ -5417,11 +6028,13 @@ function multiplayerRestartButtonMouseClick(thisGame)
     stopAndReset();
     disableBoardBuilder();
     expandMultiplayerForm();
+    patchPerspective(thisGame); 
     const formIndex = Foundation.$registry.length - 1;
     const playButton = document.getElementById("Foundation_Elemental_" + formIndex + "_PlayButton");
     const startAnotherButton = document.getElementById("Foundation_Elemental_" + gameVersion + "_startAnotherGame");
     if (playButton)
     {
+        playSound("newGame");  
         for (let playerCount in window.isPlayerCountSelected)
         {
             if (window.isPlayerCountSelected[playerCount] === true)
@@ -5430,7 +6043,7 @@ function multiplayerRestartButtonMouseClick(thisGame)
                 setupNextGamePlayers(playerCount, formIndex);
                 break;
             }
-        }   
+        }
         hideMultiplayerForm();
         Foundation.$registry[formIndex].play();
     }
@@ -5562,5 +6175,494 @@ function addMultiplayerRestartButton(thisGame, form)
     button.style.fontFamily = "Verdana";
     button.addEventListener('click', function(){ multiplayerRestartButtonMouseClick(thisGame) });
     form.appendChild(button);
+}
+
+
+// Sound 
+
+
+function addSound()
+{
+    if (!komputerSoundPath)
+    {
+        console.log("Audio source not found.");
+        return;
+    }
+    komputerSound = {path : komputerSoundPath, playList : new Map(), shouldPlay : false, debug : false}
+    addSoundToggle();
+}
+
+
+function addSoundToggle()
+{
+    let toggle = document.createElement("input");
+    toggle.setAttribute("type", "checkbox");
+    toggle.id = "SoundToggle";
+    toggle.addEventListener('click', function()
+    {
+        console.log("Sound Toggle: " + this.checked);
+        resetButtonPositions();
+        toggleSound(this.checked);
+    });  
+	let style = {position: 'absolute', top: getDarkModeToggleTop(), left:'124px', 'z-index': '9999'};
+	let toggleStyle = toggle.style;
+	Object.keys(style).forEach(key => toggleStyle[key] = style[key]);
+    document.body.appendChild(toggle);
+    // Toggle Label
+    let toggleLabel = document.createElement("label");
+    toggleLabel.id = "SoundToggleLabel";
+    toggleLabel.htmlFor = "SoundToggle";
+    toggleLabel.innerText = "Sound";  
+    style = {position: 'absolute', top: getDarkModeToggleLabelTop(), left:'143px', 'z-index': '9999', 'font-size': '8px'};
+    Object.keys(style).forEach(key => toggleLabel.style[key] = style[key]);
+    document.body.appendChild(toggleLabel);
+}
+
+
+function toggleSound(isChecked)
+{
+    if (!komputerSound)
+    {
+        return;
+    }
+    komputerSound.shouldPlay = isChecked;
+    if (isChecked)
+    {
+        loadSounds();
+    }
+    else 
+    {
+        stopAllSound();
+    }
+}
+
+
+function loadSounds(forceReload = false, playAmbient = true)
+{
+    if (!komputerSound || !komputerSound.shouldPlay)
+    {
+        return;
+    }
+    if (komputerSound.playList.size === 0 || forceReload)
+    {
+        if (forceReload)
+        {
+            stopAllSound();
+        }
+        let eventTypes = ["ambient", "battleArtillery", "battleCavalry", "battleCiv", "battlePending", "battleRoll", "battleRollShort", "bombard_f", "bombard_a", "buildCiv", "customizeMap", "move_i", "move_c", "move_a", "move_f", "place_i", "place_c", "place_a", "place_f", "lose", "win", "newGame"];
+        for (const type of eventTypes)
+        {
+            komputerSound.playList.set(type, {audioHandles: getAudioHandles(type), playIndex: 0, noOverlap : cannotOverlap(type)});
+        }
+    }
+    if (playAmbient)
+    {
+        setTimeout(function(){playSound("ambient")}, 200);
+    }
+}
+
+
+function getAudioHandles(type)
+{
+    switch(type)
+    {
+        case "ambient" : 
+        {
+            return getAmbientAudio();
+        }
+        case "battleArtillery" : 
+        {
+            return getBattleArtilleryAudio();
+        }
+        case "battleCavalry" : 
+        {
+            return getBattleCavalryAudio();
+        }
+        case "battleCiv" : 
+        {
+            return getBattleCivAudio(); 
+        }
+        case "battlePending" : 
+        {
+            return getBattlePendingAudio(); 
+        }
+        case "battleRoll" : 
+        {
+            return getBattleRollAudio(); 
+        }
+        case "battleRollShort" : 
+        {
+            return getBattleRollShortAudio(); 
+        }
+        case "bombard_a":
+        {
+            return getArtilleryBombardAudio();
+        }    
+        case "bombard_f":
+        {
+            return getfrigateBombardAudio();
+        }                 
+        case "buildCiv" : 
+        {
+            return getBuildCivAudio(); 
+        }
+        case "customizeMap" :
+        {
+            return getCustomizeMapAudio();
+        }
+        case "place_i" : 
+        {
+            const numFiles = 9;
+            return getPlaceReserveAudio(type, numFiles); 
+        }
+        case "place_c" : 
+        {
+            const numFiles = 3;
+            return getPlaceReserveAudio(type, numFiles); 
+        }
+        case "place_a" : 
+        {
+            const numFiles = 3;
+            return getPlaceReserveAudio(type, numFiles); 
+        }
+        case "place_f" : 
+        {
+            const numFiles = 3;
+            return getPlaceReserveAudio(type, numFiles); 
+        }
+        case "move_i" : 
+        {
+            return getMoveInfantryAudio(); 
+        }
+        case "move_c" : 
+        {
+            return getMoveCavalryAudio(); 
+        }
+        case "move_a" : 
+        {
+            return getMoveArtilleryAudio(); 
+        }
+        case "move_f" : 
+        {
+            return getMoveFrigateAudio(); 
+        }
+        case "lose" : 
+        {
+            return getLoseAudio(); 
+        }        
+        case "win" : 
+        {
+            return getWinAudio(); 
+        }
+        case "newGame" :
+        {
+            return getNewGameAudio();
+        }
+        case "default" :
+        {
+            console.warning("No audio handles for unknown event: " + type)
+            return [];
+        }
+    }
+}
+
+
+function cannotOverlap(type)
+{
+    switch(type)
+    {
+        case "move_i" : 
+        case "lose" :
+        case "win" : 
+        {
+            return true; 
+        }
+        case "default" :
+        {
+            return false;
+        }
+    }
+}
+
+
+function playSound(eventType)
+{
+    if (!komputerSound || !komputerSound.shouldPlay)
+    {
+        return;
+    }
+    let audioHandle = null; 
+    if (komputerSound.playList.has(eventType))
+    {
+        const sound = komputerSound.playList.get(eventType);
+        const audioHandles = sound.audioHandles;
+        if (audioHandles)
+        {
+            if (sound.noOverlap)
+            {
+                for (const audioHandle of sound.audioHandles)
+                {
+                    if (!audioHandle.paused)
+                    {
+                        return;
+                    }
+                }
+            }
+            const playIndex = sound.playIndex;
+            audioHandle = audioHandles[playIndex];
+            incrementPlayIndex(sound);
+        }
+    }
+    if (audioHandle)
+    {
+        audioHandle.play();
+        if (komputerSound.debug)
+        {
+            console.log("Playing sound: " + eventType);
+        }
+    }
+}
+
+
+function incrementPlayIndex(sound)
+{
+    if (sound.playIndex + 1 < sound.audioHandles.length)
+    {
+        sound.playIndex++;
+    }
+    else
+    {
+        sound.playIndex = 0;
+    }
+}
+
+
+function getAmbientAudio()
+{
+    let audioHandle = new Audio(komputerSound.path + "ocean.wav");
+    audioHandle.loop = true;
+    return [audioHandle];
+}
+
+
+function getBattleArtilleryAudio()
+{
+    const numAudio = 2;
+    const prefix = "battleArtillery";
+    let audioHandles = [];
+    for (let trackNumber = 1; trackNumber <= numAudio; trackNumber++)
+    {
+        audioHandles.push(new Audio(komputerSound.path + prefix + trackNumber + ".wav"))
+    }
+    return audioHandles; 
+}
+
+
+function getBattleCavalryAudio()
+{
+    const numAudio = 2;
+    const prefix = "battleCavalry";
+    let audioHandles = [];
+    for (let trackNumber = 1; trackNumber <= numAudio; trackNumber++)
+    {
+        audioHandles.push(new Audio(komputerSound.path + prefix + trackNumber + ".wav"))
+    }
+    return audioHandles; 
+}
+
+
+function getBattleCivAudio()
+{
+    return [new Audio(komputerSound.path + "bells.wav")];
+}
+
+
+function getBattlePendingAudio()
+{
+    const numAudio = 2;
+    const prefix = "infantryBattle";
+    let audioHandles = [];
+    for (let trackNumber = 1; trackNumber <= numAudio; trackNumber++)
+    {
+        audioHandles.push(new Audio(komputerSound.path + prefix + trackNumber + ".wav"))
+    }
+    return audioHandles; 
+}
+
+
+function getBattleRollAudio()
+{
+    return [new Audio(komputerSound.path + "drumroll.wav")];
+}
+
+
+function getBattleRollShortAudio()
+{
+    return [new Audio(komputerSound.path + "drumroll-short.wav")];
+}
+
+
+function getArtilleryBombardAudio()
+{
+    const numAudio = 2;
+    const prefix = "bombard_a";
+    let audioHandles = [];
+    for (let trackNumber = 1; trackNumber <= numAudio; trackNumber++)
+    {
+        audioHandles.push(new Audio(komputerSound.path + prefix + trackNumber + ".wav"))
+    }
+    return audioHandles; 
+}
+
+
+function getfrigateBombardAudio()
+{
+    const numAudio = 2;
+    const prefix = "bombard_f";
+    let audioHandles = [];
+    for (let trackNumber = 1; trackNumber <= numAudio; trackNumber++)
+    {
+        audioHandles.push(new Audio(komputerSound.path + prefix + trackNumber + ".wav"))
+    }
+    return audioHandles; 
+}
+
+
+function getBuildCivAudio()
+{
+    const numAudio = 2;
+    const prefix = "build";
+    let audioHandles = [];
+    for (let trackNumber = 1; trackNumber <= numAudio; trackNumber++)
+    {
+        audioHandles.push(new Audio(komputerSound.path + prefix + trackNumber + ".wav"))
+    }
+    return audioHandles; 
+}
+
+
+function getCustomizeMapAudio()
+{
+    return [new Audio(komputerSound.path + "customizeMap.wav")];
+}
+
+
+function getPlaceReserveAudio(type, numFiles = 3)
+{
+    const numAudio = numFiles;
+    const prefix = type;
+    let audioHandles = [];
+    for (let trackNumber = 1; trackNumber <= numAudio; trackNumber++)
+    {
+        audioHandles.push(new Audio(komputerSound.path + prefix + trackNumber + ".wav"))
+    }
+    return audioHandles; 
+}
+
+
+function getMoveInfantryAudio()
+{
+    const numAudio = 2;
+    const prefix = "march";
+    let audioHandles = [];
+    for (let trackNumber = 1; trackNumber <= numAudio; trackNumber++)
+    {
+        audioHandles.push(new Audio(komputerSound.path + prefix + trackNumber + ".wav"))
+    }
+    return audioHandles; 
+}
+
+
+function getMoveCavalryAudio()
+{
+    const numAudio = 2;
+    const prefix = "gallop";
+    let audioHandles = [];
+    for (let trackNumber = 1; trackNumber <= numAudio; trackNumber++)
+    {
+        audioHandles.push(new Audio(komputerSound.path + prefix + trackNumber + ".wav"))
+    }
+    return audioHandles; 
+}
+
+
+function getMoveArtilleryAudio()
+{
+    const numAudio = 2;
+    const prefix = "move_artillery";
+    let audioHandles = [];
+    for (let trackNumber = 1; trackNumber <= numAudio; trackNumber++)
+    {
+        audioHandles.push(new Audio(komputerSound.path + prefix + trackNumber + ".wav"))
+    }
+    return audioHandles; 
+}
+
+
+function getMoveFrigateAudio()
+{
+    const numAudio = 2;
+    const prefix = "ship";  
+    let audioHandles = [];
+    for (let trackNumber = 1; trackNumber <= numAudio; trackNumber++)
+    {
+        audioHandles.push(new Audio(komputerSound.path + prefix + trackNumber + ".wav"))
+    }
+    return audioHandles; 
+}
+
+
+function getLoseAudio()
+{
+    const numAudio = 2;
+    const prefix = "lose";  
+    let audioHandles = [];
+    for (let trackNumber = 1; trackNumber <= numAudio; trackNumber++)
+    {
+        audioHandles.push(new Audio(komputerSound.path + prefix + trackNumber + ".wav"))
+    }
+    return audioHandles; 
+}
+
+
+function getWinAudio()
+{
+    return [ new Audio(komputerSound.path + "win.wav") ]
+}
+
+
+function getNewGameAudio()
+{
+    const numAudio = 2;
+    const prefix = "newGame";
+    let audioHandles = [];
+    for (let trackNumber = 1; trackNumber <= numAudio; trackNumber++)
+    {
+        audioHandles.push(new Audio(komputerSound.path + prefix + trackNumber + ".wav"))
+    }
+    return audioHandles; 
+}
+
+
+function stopAllSound()
+{
+    if (!komputerSound)
+    {
+        return;
+    }
+    for (const [key, sound] of komputerSound.playList.entries())
+    {
+        if (sound.audioHandles)
+        {
+            for (const handle of sound.audioHandles)
+            {
+                if (!handle.paused)
+                {
+                    handle.pause();
+                    console.log("Sound paused.");
+                }
+            }
+        }
+    }
 }
 

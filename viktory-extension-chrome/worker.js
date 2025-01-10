@@ -22,9 +22,22 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) =>
 
 async function loadScript(targetTabId) 
 {
+    const audioURL = chrome.runtime.getURL('sound/');
+    chrome.scripting.executeScript({
+        target : {tabId : targetTabId},
+        func: addAudioSource,
+        args: [audioURL],
+        world : "MAIN"
+    });  
+
     chrome.scripting.executeScript({
         target : {tabId : targetTabId},
         files : [ "script.js" ],
         world : "MAIN"
     });  
+}
+
+function addAudioSource(url)
+{
+    window.komputerSoundPath = url;
 }
