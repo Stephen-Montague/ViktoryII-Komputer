@@ -4,12 +4,12 @@
     "background": {
         "service_worker": "komputer-worker.js"
     },
-    "description": "Adds computer opponents, Napoleonic sound effects, and enhancements for Viktory II on GamesByEmail.",
+    "description": "Adds computer opponents, Napoleonic sound effects, and a game editor for Viktory II on GamesByEmail.",
     "manifest_version":3,
     "name": "Viktory II Komputer",
     "permissions": ["scripting", "tabs"],
     "host_permissions": ["http://gamesbyemail.com/Games/Viktory2*", "http://gamesbyemail.com/Games/Play*"],
-    "version": "2025.2.4.1",
+    "version": "2025.2.22.0",
     "icons": {
         "48": "img/icon-frigate-48.png",
         "128": "img/icon-frigate-128.png"

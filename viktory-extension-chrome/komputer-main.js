@@ -70,7 +70,7 @@ function setupGameExtension()
             addRunButton("Let Komputer Play", runKomputerClick, thisGame);
             addStopButton("Stop", stopKomputerClick);
             addDarkModeToggle();
-            addBoardBuilder(thisGame);
+            addGameEditor(thisGame);
             addLocalMultiplayer(thisGame);
             addSound(thisGame);
             cacheElementsForStyling();
@@ -166,7 +166,7 @@ function runKomputerClick(thisGame)
             clearLastAction(thisGame);
             patchPieceData(thisGame);
             resetGlobals();
-            disableBoardBuilder();
+            disableGameEditor();
             styleButtonForRun();
             runKomputer(thisGame);
         }
@@ -543,10 +543,10 @@ function prepareNextUnit(unitList)
 }
 
 
-function findFrigates(thisGame, colors, pieceList)
+function findFrigates(thisGame, colors, loadedFirst = false, pieceList = null)
 {
     let frigates = [];
-    if (typeof(pieceList) === "undefined")
+    if (pieceList === null)
     {
         pieceList = thisGame.pieces;
     }
@@ -559,9 +559,17 @@ function findFrigates(thisGame, colors, pieceList)
         }
         for (const unit of piece.units)
         {
-            if (colors.includes(unit.color) && unit.type === "f")
+            if (colors.includes(unit.color) && unit.isFrigate())
             {
-                frigates.push(unit);
+                const hasCargo = unit.cargo.length > 0;
+                if (loadedFirst && hasCargo)
+                {
+                    frigates.unshift(unit);
+                }
+                else
+                {
+                    frigates.push(unit);
+                }
             }
         }
     }
@@ -1368,10 +1376,28 @@ function guessTravelCostToEnemy(thisGame, unit, pieceOrigin)
     pieceOrigin.removeUnit(possibleUnit);
     if (travelCost === maxDistance)
     {
+        let destination = null;
         const enemyColors = getEnemyColors(thisGame);
         const enemyColor = getRandomItem(enemyColors);
-        const enemyCapital = thisGame.pieces.findCapitalPiece(enemyColor);
-        travelCost = thisGame.distanceBewteenPoints(pieceOrigin.boardPoint.clone(), enemyCapital.boardPoint.clone());
+        if (Math.random() < 0.6)
+        {
+            destination = thisGame.pieces.findCapitalPiece(enemyColor);
+        }
+        else
+        {
+            const hiddenPieces = [];
+            for (const piece of thisGame.pieces)
+            {
+                if (piece.hidden)
+                {
+                    hiddenPieces.push(piece);
+                }
+            }
+            destination = hiddenPieces.length ? getRandomItem(hiddenPieces) : thisGame.pieces.findCapitalPiece(enemyColor);
+        }
+        destination = destination ? destination.boardPoint.clone() : getCenterPieceBoardPoint(thisGame);
+        const origin = pieceOrigin.boardPoint.clone();
+        travelCost = thisGame.distanceBewteenPoints(origin, destination);
     }
     return travelCost;
 }
@@ -1607,7 +1633,7 @@ function hasIsolatedForestCity(thisGame, piece)
 async function getBoardingFrigateScore(thisGame, unit, piece)
 {
     let score = 0;
-    const frigates = findFrigates(thisGame, [thisGame.perspectiveColor], [piece]);
+    const frigates = findFrigates(thisGame, [thisGame.perspectiveColor], false, [piece]);
     const firstFrigate = frigates[0];
     const canReachEnemy = hasAmphibTarget(thisGame, firstFrigate, true, false);
     if (canReachEnemy)
@@ -1682,12 +1708,17 @@ async function getOpenCountrysideScore(thisGame, unit, piece, possibleMovePoint,
         if (isEarlyGame && isFirstTurnMove) 
         {
             // Explore toward center.
-            const firstTurnInnerEmphasizedIndecies = [15, 22, 38];
-            if (firstTurnInnerEmphasizedIndecies.includes(piece.index))
+            const stronglyEmphasizedIndecies = [15, 22, 38];
+            if (stronglyEmphasizedIndecies.includes(piece.index))
             {
-                score += 0.21;
+                score += 0.25;
             }
-            // Prefer start-adjacent hexes.
+            const emphasizedIndecies = [14, 23];
+            if (emphasizedIndecies.includes(piece.index))
+            {
+                score += 0.1875;
+            }
+            // Prefer start-adjacent for exploration over roads.
             if (isAdjacent(thisGame, possibleMovePoint, unit.piece.boardPoint.clone()))
             {
                 score += 0.125;
@@ -1702,7 +1733,7 @@ function getFrigateMoveScore(thisGame, piece, unit, enemyColor, primaryTargetCol
 {
     let score = 0;
     const hasEnemyFrigate = piece.hasFrigate(enemyColor);
-    if (unit.hasUnloadables())
+    if (unit && unit.hasUnloadables())
     {
         // Loaded frigates should move toward enemy coastal towns.
         const enemyCivs = thisGame.pieces.getOpponentCivilizations(thisGame.perspectiveColor);
@@ -2376,11 +2407,14 @@ async function isVulnerable(thisGame, piece)
 
 function clearHoldingUnits()
 {
-    for (let unit of window.holdingUnits)
+    if (window.holdingUnits && window.holdingUnits.length)
     {
-        unit.holding = false;
+        for (let unit of window.holdingUnits)
+        {
+            unit.holding = false;
+        }
+        window.holdingUnits = [];
     }
-    window.holdingUnits = [];
 }
 
 
@@ -2400,11 +2434,11 @@ function bombard(thisGame, unit, bombardablePoints)
                 const commitDelay = 600;
                 setTimeout(function(){
                     thisGame.overlayCommitOnClick();
-                    setTimeout(function(){ replaceBattleMessage() }, 16);
+                    setTimeout(function(){ replaceBattleMessage(thisGame) }, 16);
                     // Apply hits.
                     const applyHitsDelay = 100;
                     setTimeout(function(){
-                        replaceBattleMessage();
+                        replaceBattleMessage(thisGame);
                         if (thisGame.battleData)
                         {
                             const data = thisGame.getBattleData();
@@ -2517,7 +2551,7 @@ function fightBattle(thisGame, battlePiece, isReserveBattle = false)
                 playSound("battleArtillery");
             }
             thisGame.overlayCommitOnClick();
-            setTimeout(replaceBattleMessage, 100);
+            setTimeout(function(){ replaceBattleMessage(thisGame) }, 100);
             const applyHitsDelay = 600;
             setTimeout(function(){
                 hideEndTurnButtons();
@@ -2547,7 +2581,7 @@ function fightBattle(thisGame, battlePiece, isReserveBattle = false)
                             thisGame.pieces[battlePiece.index].battleOkClick(thisGame.player.team.color);
                             window.waitCount = 0;
                             hideEndTurnButtons();
-                            replaceBattleMessage();
+                            replaceBattleMessage(thisGame);
                             const reRollDelay = 1200;
                             setTimeout(function(){
                                 const rollRequired = document.getElementById("Foundation_Elemental_" + GameVersion + "_overlayCommit");
@@ -2668,12 +2702,13 @@ function selectBattle(thisGame, battlePiece)
 }
 
 
-function replaceBattleMessage()
+function replaceBattleMessage(thisGame)
 {
     let battleMessage = document.querySelector("#Foundation_Elemental_" + GameVersion + "_centerOverPiece > tbody > tr:nth-child(3) > td");
     if (battleMessage && battleMessage.innerText.substr(0, 3) === "You")
     {
-        battleMessage.innerText = "The Komputer " + battleMessage.innerText.substr(3);
+        const teamColor = GamesByEmail.Viktory2Game.resourcePack.teamTitles[thisGame.perspectiveColor];
+        battleMessage.innerText = teamColor + " " + battleMessage.innerText.substr(3);
     }
 }
 
@@ -2747,25 +2782,10 @@ async function placeReserveUnit(thisGame)
         return;
     }
     hideEndTurnButtons();
-    const reserveUnits = thisGame.player.team.reserveUnits;
     const controlsCapital = thisGame.doesColorControlTheirCapital(thisGame.player.team.color);
-    let hasPlayableReserveUnit = false;
-    if (reserveUnits.length > 0)
+    const hasReserveUnit = getHasPlayableReserveUnit(thisGame, controlsCapital, true);
+    if (hasReserveUnit)
     {
-        for (let i = reserveUnits.length - 1; i >= 0; i--)
-        {
-            if (thisGame.couldPlaceReserveUnit(reserveUnits[i], thisGame.player.team.color, controlsCapital))
-            {
-                const element = document.querySelector("#Foundation_Elemental_" + GameVersion + "_reserve_" + i);
-                thisGame.reserveOnMouseDown(element, thisGame.event("reserveOnMouseDown(this,event,#)"), i);
-                hasPlayableReserveUnit = true;
-                break;
-            }
-        }
-    }
-    if (hasPlayableReserveUnit)
-    {
-        // Place reserve unit.
         const movingUnitType = thisGame.pieces.getNewPiece().movingUnit.type;
         const isCivilization = (movingUnitType === "t" || movingUnitType === "y")
         const destinationBoardPoint = isCivilization ? (
@@ -2801,6 +2821,36 @@ async function placeReserveUnit(thisGame)
             }
         }, 100);
     }
+}
+
+
+function getHasPlayableReserveUnit(thisGame, controlsCapital, select, color = null, unitType = null)
+{
+    const reserveUnits = color === null ? thisGame.player.team.reserveUnits : thisGame.teams.findTeamByColor(color).reserveUnits;
+    if (reserveUnits.length > 0)
+    {
+        for (let i = reserveUnits.length - 1; i >= 0; i--)
+        {
+            if (thisGame.couldPlaceReserveUnit(reserveUnits[i], thisGame.player.team.color, controlsCapital))
+            {
+                if (select || unitType)
+                {
+                    if (select && (!unitType || reserveUnits[i] === unitType ))
+                    {
+                        const element = document.querySelector("#Foundation_Elemental_" + GameVersion + "_reserve_" + i);
+                        thisGame.reserveOnMouseDown(element, thisGame.event("reserveOnMouseDown(this,event,#)"), i);
+                        return true;
+                    }
+                    if (unitType && reserveUnits[i] !== unitType )
+                    {
+                        continue;
+                    } 
+                }
+                return (!unitType || reserveUnits[i] === unitType) ? true : false;
+            }
+        }
+    }
+    return false;
 }
 
 
@@ -2906,9 +2956,9 @@ async function getBestBuildable(thisGame)
     {
         return getEarlyGameStrongPoint(thisGame, buildablePoints, playerCivCount, playerCivs);  
     }
-    // Return any closest threatened town point.
+    // Return any closest vulnerable town point.
     let buildablePieces = [];
-    sortByClosestToEnemy(thisGame, buildablePoints);
+    markClosestToEnemy(thisGame, buildablePoints);
     for (const point of buildablePoints)
     {
         const piece = thisGame.pieces.findAtPoint(point);
@@ -2917,6 +2967,51 @@ async function getBestBuildable(thisGame)
             return point;
         }
         buildablePieces.push(piece);
+    }
+    // Check for pinned towns to support via build on nearby forest.
+    let pinAdjacentPoints = [];
+    for (const civ of playerCivs)
+    {
+        const isPinned = (hasAdjacentEnemyArmy(thisGame, civ) || hasAdjacentEnemyFrigate(thisGame, civ));
+        if (!isPinned)
+        {
+            continue;
+        }
+        const maySupport = hasAdjacentWater(thisGame, civ) && !hasAdjacentFrigate(thisGame, civ, thisGame.perspectiveColor);
+        if (maySupport && await isVulnerable(thisGame, civ))
+        {
+            const pinAdjacentIndecies = civ.getAdjacentIndecies(1);
+            for (const index of pinAdjacentIndecies)
+            {
+                const pinAdjacentPiece = thisGame.pieces[index];
+                if (pinAdjacentPiece.isWater())
+                {
+                    pinAdjacentPoints.push(pinAdjacentPiece.boardPoint.clone());
+                }
+            }
+        } 
+    }
+    if (pinAdjacentPoints.length)
+    {
+        for (let buildIndex = 0; buildIndex < buildablePieces.length; buildIndex++)
+        {
+            const buildPiece = buildablePieces[buildIndex];
+            if (buildPiece.isForest() && buildPiece.hasTown(thisGame.perspectiveColor) && hasAdjacentWater(thisGame, buildPiece))
+            {
+                const buildAdjacentIndecies = buildPiece.getAdjacentIndecies(1);
+                for (const buildAdjacentIndex of buildAdjacentIndecies)
+                {
+                    const buildAdjacentPoint = thisGame.pieces[buildAdjacentIndex].boardPoint.clone();
+                    for (const pinAdjacentPoint of pinAdjacentPoints)
+                    {
+                        if (pinAdjacentPoint.equals(buildAdjacentPoint))
+                        {
+                            return buildablePoints[buildIndex];
+                        }
+                    }
+                }
+            }
+        }
     }
     // Build map central towns first, with priority on weaker towns.
     const centerPiece = getCenterPiece(thisGame);
@@ -3276,16 +3371,9 @@ function countTerrain(pieces, terrainValue)
 
 async function getBestReservable(thisGame, movingUnitType, controlsCapital)
 {
-    // Get reservable points and remove placeholders.
     let reservables = thisGame.pieces.getReservables(thisGame.player.team.color,thisGame.player.team.rulerColor, movingUnitType, controlsCapital);
-    for (let i = reservables.length -1; i >= 0; i--)
-    {
-        if (reservables[i].placeHolderOnly)
-		{
-			reservables.splice(i, 1);
-		}
-    }
-    // On first turn: try to set infantry in town with adjacent smooth terrain.
+    removePlaceHolders(reservables);
+    // First turn: set infantry in town with adjacent smooth terrain.
     const isFirstTurn = thisGame.maxMoveNumber < 8;
     if (isFirstTurn)
     {
@@ -3295,8 +3383,25 @@ async function getBestReservable(thisGame, movingUnitType, controlsCapital)
             return reservable;
         }
     }
-    // Sort by closest to enemy, push capital to the end.
-    sortByClosestToEnemy(thisGame, reservables);
+    const isFrigate = movingUnitType === "f";
+    return isFrigate ? getBestFrigateReservable(thisGame, reservables) : await getBestLandReservable(thisGame, reservables);
+}
+
+
+function removePlaceHolders(reservables)
+{
+    for (let i = reservables.length -1; i >= 0; i--)
+    {
+        if (reservables[i].placeHolderOnly)
+        {
+            reservables.splice(i, 1);
+        }
+    }
+}
+
+
+function pushCapitalToEnd(thisGame, reservables)
+{
     const capitalPoint = thisGame.pieces.findCapitalPiece(thisGame.perspectiveColor).boardPoint.clone();
     for (let i = reservables.length -1; i >= 0; i--)
     {
@@ -3305,7 +3410,80 @@ async function getBestReservable(thisGame, movingUnitType, controlsCapital)
             reservables.push(reservables.splice(i,1)[0]);
         }
     }
-    // Guard any empty threatened town, from closest to the enemy.
+}
+
+
+function getBestFrigateReservable(thisGame, reservables)
+{
+    markClosestToEnemy(thisGame, reservables, false);
+    let closestReservables = getAllClosestReservables(reservables);
+    if (closestReservables.length > 1)
+    {
+        scoreFrigateReservables(thisGame, closestReservables);
+        return getMaxScoreReservable(closestReservables);
+    }
+    return closestReservables[0];
+}
+
+
+function getAllClosestReservables(reservables)
+{
+    let closestReservables = [];
+    let minDistance = Number.MAX_VALUE;
+    for (let reservable of reservables)
+    {
+        if (reservable.minDistanceToEnemy < minDistance)
+        {
+            closestReservables = [];
+            closestReservables.push(reservable);
+            minDistance = reservable.minDistanceToEnemy;
+        }
+        else if (reservable.minDistanceToEnemy === minDistance)
+        {
+            closestReservables.push(reservable);
+        }
+    }
+    return closestReservables;
+}
+
+
+function scoreFrigateReservables(thisGame, reservables)
+{
+    for (let reservable of reservables)
+    {
+        const piece = thisGame.pieces.findAtPoint(reservable);
+        const enemyColor = piece.getOpponentColor(thisGame.perspectiveColor);
+        const primaryTargetColors = window.primaryTargetColors ? window.primaryTargetColors : decidePrimaryTargetColors(thisGame);
+        reservable.score = getFrigateMoveScore(thisGame, piece, null, enemyColor, primaryTargetColors);
+    }
+}
+
+
+function getMaxScoreReservable(reservables)
+{
+    let maxScore = Number.MIN_VALUE;
+    let best = null;
+    for (const reservable of reservables)
+    {
+        if (reservable.score > maxScore)
+        {
+            maxScore = reservable.score;
+            best = reservable;
+        }
+        else if ((reservable.score === maxScore) && (Math.random() < 0.5))
+        {
+            best = reservable;
+        }
+    }
+    return best;
+}
+
+
+async function getBestLandReservable(thisGame, reservables)
+{
+    markClosestToEnemy(thisGame, reservables);
+    pushCapitalToEnd(thisGame, reservables);
+    // Guard any empty threatened town.
     for (const reservable of reservables)
     {
         const piece = thisGame.pieces.findAtPoint(reservable);
@@ -3393,9 +3571,8 @@ function sortByClosestToCapital(thisGame, points)
 }
 
 
-function sortByClosestToEnemy(thisGame, points)
+function markClosestToEnemy(thisGame, points, sort = true)
 {
-    // Get enemy armies or towns.
     const enemyColors = getEnemyColors(thisGame);
     let enemyArmies = getArmyUnits(thisGame, enemyColors);
     if (!enemyArmies)
@@ -3408,23 +3585,24 @@ function sortByClosestToEnemy(thisGame, points)
         const enemyCivPiece = getRandomItem(enemyCivPieces);
         enemyArmies = [enemyCivPiece.findCivilization(enemyCivPiece.getOpponentColor(thisGame.perspectiveColor))];
     }
-    let minimumPointToEnemyDistances = []
-    // Find the closest distance of each point to all enemies.
-    for (const point of points)
+    for (let point of points)
     {
         let minDistanceToArmy = Number.MAX_VALUE;
         for (const enemyArmy of enemyArmies)
         {
-            const distanceToArmy = thisGame.distanceBewteenPoints(enemyArmy.piece.boardPoint, point);
+            const enemyPoint = enemyArmy.piece.boardPoint.clone();
+            const distanceToArmy = thisGame.distanceBewteenPoints(point, enemyPoint);
             if (distanceToArmy < minDistanceToArmy)
             {
-                minDistanceToArmy = distanceToArmy;
+                minDistanceToArmy = distanceToArmy
+                point.minDistanceToEnemy = distanceToArmy;
             }
         }
-        minimumPointToEnemyDistances.push(minDistanceToArmy);
     }
-    // Sort all reservables based on the closest distance of each to the enemy.
-    points.sort(function(a, b){ return minimumPointToEnemyDistances[points.indexOf(a)] - minimumPointToEnemyDistances[points.indexOf(b)] });
+    if (sort)
+    {
+        points.sort(function(a, b){ return a.minDistanceToEnemy - b.minDistanceToEnemy });
+    }
 }
 
 
@@ -3774,7 +3952,8 @@ async function maybeRecallFrigatesToPort(thisGame)
                 for (const civPiece of civPieces)
                 {
                     const isPinned = (hasAdjacentEnemyArmy(thisGame, civPiece) || hasAdjacentEnemyFrigate(thisGame, civPiece));
-                    if (isPinned && hasAdjacentWater(thisGame, civPiece) && !hasAdjacentFrigate(thisGame, civPiece, thisGame.perspectiveColor))
+                    const maySupport = hasAdjacentWater(thisGame, civPiece) && !hasAdjacentFrigate(thisGame, civPiece, thisGame.perspectiveColor);
+                    if (isPinned && maySupport)
                     {
                         let adjacentIndecies = civPiece.getAdjacentIndecies(1);
                         for (const pieceIndex of adjacentIndecies)
@@ -3964,8 +4143,10 @@ function placeCapital(thisGame)
                 }
                 setTimeout(function(){
                     thisGame.customizeMapDoAll(true);
-                    // End player 1 turn.
-                    if (thisGame.perspectiveColor === 0 && thisGame.numberOfDistinctPlayers < 7)
+                    const controlsCapital = thisGame.doesColorControlTheirCapital(thisGame.player.team.color);
+                    const hasReserveUnit = getHasPlayableReserveUnit(thisGame, controlsCapital, false);
+                    // Player 1 normally ends here.
+                    if (!hasReserveUnit)
                     {
                         thisGame.endMyTurn();
                         setTimeout(function()
@@ -3975,7 +4156,7 @@ function placeCapital(thisGame)
                             komputerLog("Done.");
                         }, 200);
                     }
-                    // Player 2 places another town based on specific location data. Later reserve phases use other guidance.
+                    // Player places additional town based on specific data. Later reserve phases use other guidance.
                     else
                     {
                         if (thisGame.movePhase === 11)
@@ -4312,8 +4493,9 @@ function decideHexOrder(thisGame, hexTerrain, exploringUnitBoardPoint)
                 activeEnemyColors.push(color);
             }
         }
-        const randomEnemyColor = getRandomItem(activeEnemyColors);
-        const enemyCapitalPiece = thisGame.pieces.findCapitalPiece(randomEnemyColor);
+        const activeEnemyColor = getRandomItem(activeEnemyColors);
+        const enemyColor = activeEnemyColor !== null ? activeEnemyColor : getRandomItem(enemyColors);
+        const enemyCapitalPiece = thisGame.pieces.findCapitalPiece(enemyColor);
         const enemyPoint = enemyCapitalPiece.boardPoint.clone();
         const vectorToEnemy = enemyPoint.subtract(exploringUnitBoardPoint);
         const vectorToEnemyWorldAngle = Math.atan2(vectorToEnemy.y, vectorToEnemy.x);
@@ -5607,6 +5789,20 @@ function patchGamePrototype()
         return this.targetPoints && this.targetPoints.length>0;
     }
 
+    // Adds button position reset on end turn.
+    GamesByEmail.Viktory2Game.prototype.endMyTurn = function()
+    {
+        if (!this.battlesPendingAlert("EndTurn") &&
+            this.confirmEndReservePlacement("EndTurn"))
+        {
+            this.moveToNextPlayer();
+            this.sendMove();
+            setTimeout(function(){ resetButtonPositions() }, 100);
+        }
+        else
+            this.getElement("endMyTurn").disabled=false;
+    }
+
     // Modified to play sound on placing capital.
     GamesByEmail.Viktory2Game.prototype.placeCapitalMouseDown = function(screenPoint)
     {
@@ -6167,7 +6363,7 @@ function stopAndReset(resetKomputerButton = true)
     resetAllButtonStyles();
     clearHoldingUnits();
     resetGlobals(resetKomputerButton);
-    komputerLog("Stopped.");
+    komputerLog("All Stop.");
 }
 
 
@@ -6230,8 +6426,8 @@ function resetButtonPositions(visible = true)
     let stopButton = document.getElementById("StopKomputerButton_" + GameVersion);
     let darkModeToggle = document.getElementById("DarkModeToggle_" + GameVersion);
     let darkModeLabel = document.getElementById("DarkModeLabel_" + GameVersion);
-    let boardBuilder = document.getElementById("BoardBuilder");
-    let boardBuilderToggle = document.getElementById("BoardBuilderToggle");
+    let gameEditor = document.getElementById("GameEditor");
+    let gameEditorToggle = document.getElementById("GameEditorToggle");
     let multiplayerForm = document.getElementById("MultiplayerForm");
     let soundToggle = document.getElementById("SoundToggle_" + GameVersion);
     let soundToggleLabel = document.getElementById("SoundToggleLabel_" + GameVersion);
@@ -6251,20 +6447,20 @@ function resetButtonPositions(visible = true)
         soundToggleLabel.style.visibility = "";
         if (isOnPreviewTab())
         {
-            if (boardBuilder && boardBuilderToggle)
+            if (gameEditor && gameEditorToggle)
             {
-                boardBuilder.style.top = getBoardBuilderTop();
-                boardBuilder.style.left = getBoardBuilderLeft();
-                boardBuilderToggle.style.top = getBoardBuilderToggleTop();
-                boardBuilderToggle.style.left = getBoardBuilderToggleLeft();
-                if (boardBuilderToggle.labels.length)
+                gameEditor.style.top = getGameEditorTop();
+                gameEditor.style.left = getGameEditorLeft();
+                gameEditorToggle.style.top = getGameEditorToggleTop();
+                gameEditorToggle.style.left = getGameEditorToggleLeft();
+                if (gameEditorToggle.labels.length)
                 {
-                    boardBuilderToggle.labels[0].style.top = getBoardBuilderToggleLabelTop();
-                    boardBuilderToggle.labels[0].style.left = getBoardBuilderToggleLabelLeft();
-                    boardBuilderToggle.labels[0].style.visibility = ""
+                    gameEditorToggle.labels[0].style.top = getGameEditorToggleLabelTop();
+                    gameEditorToggle.labels[0].style.left = getGameEditorToggleLabelLeft();
+                    gameEditorToggle.labels[0].style.visibility = ""
                 }
-                boardBuilder.style.visibility = ""; 
-                boardBuilderToggle.style.visibility = ""; 
+                gameEditor.style.visibility = ""; 
+                gameEditorToggle.style.visibility = ""; 
             }
             if (multiplayerForm)
             {
@@ -6280,13 +6476,13 @@ function resetButtonPositions(visible = true)
         stopButton.style.visibility = "hidden";
         darkModeToggle.style.visibility = "hidden"; 
         darkModeLabel.style.visibility = "hidden"; 
-        if (boardBuilder && boardBuilderToggle)
+        if (gameEditor && gameEditorToggle)
         {
-            boardBuilder.style.visibility = "hidden"; 
-            boardBuilderToggle.style.visibility = "hidden"; 
-            if (boardBuilderToggle.labels.length)
+            gameEditor.style.visibility = "hidden"; 
+            gameEditorToggle.style.visibility = "hidden"; 
+            if (gameEditorToggle.labels.length)
             {
-                boardBuilderToggle.labels[0].style.visibility = "hidden";
+                gameEditorToggle.labels[0].style.visibility = "hidden";
             }
         }
         if (multiplayerForm)
@@ -6479,7 +6675,7 @@ function applyLightMode(content, footer)
             }
         }
     }
-    // Backup copy of content, for Board Builder or anything that might temporarily change backgroundColor.
+    // Backup copy of content, for Game Editor or anything that might temporarily change backgroundColor.
     window.cacheContentBackgroundColor = content.style.backgroundColor;
 }
 
@@ -6719,39 +6915,45 @@ function getTouchHitBox()
     )
 }
 
-/// === Board Builder ===
+/// === Game Editor ===
 
-function addBoardBuilder(thisGame)
+function addGameEditor(thisGame)
 {
     if (thisGame.previewing && isOnPreviewTab())
     {
-        const boardBuilderDiv = document.createElement('div');
-        boardBuilderDiv.id = "BoardBuilder";
-        boardBuilderDiv.style.display = 'flex';
-        boardBuilderDiv.style.flexDirection = 'column';
-        boardBuilderDiv.style.position = "absolute";
-        boardBuilderDiv.style.top = getBoardBuilderTop();
-        boardBuilderDiv.style.left = getBoardBuilderLeft();
-        boardBuilderDiv.style.fontSize = "10px";
-        boardBuilderDiv.style.fontFamily = "Verdana";
-        boardBuilderDiv.style.padding = '4px';
-        boardBuilderDiv.innerText = "Board Builder";
-        document.body.appendChild(boardBuilderDiv);
-    
-        window.isTerrainSelected = {};
+        const gameEditorDiv = document.createElement('div');
+        gameEditorDiv.id = "GameEditor";
+        gameEditorDiv.style.display = 'flex';
+        gameEditorDiv.style.flexDirection = 'column';
+        gameEditorDiv.style.position = "absolute";
+        gameEditorDiv.style.top = getGameEditorTop();
+        gameEditorDiv.style.left = getGameEditorLeft();
+        gameEditorDiv.style.fontSize = "10px";
+        gameEditorDiv.style.fontFamily = "Verdana";
+        gameEditorDiv.style.padding = '4px';
+        gameEditorDiv.innerText = "Game Editor";
+        document.body.appendChild(gameEditorDiv);
+        window.isEditorInputSelected = {};
         const inputOptions = [
             {value: 'Plains'},
             {value: 'Grass'},
             {value: 'Forest'},
             {value: 'Mountain'},
-            {value: 'Water'}
+            {value: 'Water'},
+            {value: 'Capital'},
+            {value: 'Settlement'},
+            {value: 'Unit'},
+            {value: 'Color'},
+            {value: 'Visibility'},
+            {value: 'Reset Changes'}
         ];
         inputOptions.forEach(option => {
-            window.isTerrainSelected[option.value] = false;
-            const radioButtons = createRadioButton(option.value, addTerrainInputListener);
-            boardBuilderDiv.appendChild(radioButtons);
+            window.isEditorInputSelected[option.value] = false;
+            const radioButtons = createRadioButton(option.value, editorInputListener);
+            gameEditorDiv.appendChild(radioButtons);
         });
-        addBoardBuilderToggle();
+        addGameEditorToggle();
+        //addHistoricOpponentToggle();
     }
 }
 
@@ -6775,25 +6977,155 @@ function createRadioButton(value, addListener, groupName = 'RadioGroup_') {
     label.style.fontFamily = "Verdana";
     container.appendChild(radioButton);
     container.appendChild(label);
+    addColorLabel(container, value);
+    addUnitLabel(container, value);
     return container;
 }
 
 
-function addTerrainInputListener(radioButton)
+function addColorLabel(container, value)
 {
-    radioButton.addEventListener('change', () => 
+    if (value !== "Color")
+    {
+        return;
+    }
+    const color = 0;
+    window.cacheColor = color;
+    const colorLabel = document.createElement('label');
+    const colorText = GamesByEmail.Viktory2Game.resourcePack.teamTitles[color];
+    colorLabel.innerText = colorText;
+    colorLabel.id = "colorLabel";
+    const fontColor = "thistle"; 
+    colorLabel.style.color = fontColor;
+    colorLabel.style.fontSize = "12px";
+    colorLabel.style.fontFamily = "Verdana";
+    colorLabel.style.textDecoration = "underline";
+    colorLabel.style.marginLeft = "3px";
+    colorLabel.addEventListener('click', (event) => 
         {
-            Object.keys(window.isTerrainSelected).forEach(key => { window.isTerrainSelected[key] = false; });
-            window.isTerrainSelected[radioButton.value] = true;
-            radioButton.checked = window.isTerrainSelected[radioButton.value] ? true : false; 
-            komputerLog("Pressed: " + radioButton.value);
-            enableBoardBuilder();
-        }
-    )
+            if (isGameEditorDisabled())
+            {
+                enableGameEditor();
+                return;
+            }
+            const thisGame = findGameForActiveTab();
+            const label = event.target;
+            const maxColors = thisGame.numberOfDistinctPlayers;
+            const nextColor = (window.cacheColor + 1) < maxColors ? window.cacheColor + 1 : 0;
+            window.cacheColor = nextColor;
+            const fontColor = GamesByEmail.Viktory2Game.resourcePack.teamFontColors[nextColor];
+            label.style.color = fontColor;
+            const colorText = GamesByEmail.Viktory2Game.resourcePack.teamTitles[nextColor];
+            label.innerText = colorText;
+        });
+    colorLabel.addEventListener('mouseenter', (event) =>
+        {
+            if (isGameEditorDisabled())
+            {
+                return;
+            }
+            const label = event.target;
+            label.style.fontWeight = "bold";
+        });
+    colorLabel.addEventListener('mouseleave', (event) =>
+        {
+            const label = event.target;
+            label.style.fontWeight = "normal";
+        });
+    container.appendChild(colorLabel);
 }
 
 
-function getBoardBuilderTop()
+function addUnitLabel(container, value)
+{
+    if (value !== "Unit")
+    {
+        return;
+    }
+    window.editorUnitTypes = ["Infantry", "Cavalry", "Artillery", "Frigate"]
+    window.editorTypeIndex = 0;
+    window.editorUnitType = window.editorUnitTypes[window.editorTypeIndex];
+    const unitLabel = document.createElement('label');
+    const unitText = window.editorUnitTypes[window.editorTypeIndex];
+    unitLabel.innerText = unitText;
+    unitLabel.id = "unitLabel";
+    unitLabel.htmlFor = "RadioGroup_Unit";
+    const fontColor = "thistle"; 
+    unitLabel.style.color = fontColor;
+    unitLabel.style.fontSize = "12px";
+    unitLabel.style.fontFamily = "Verdana";
+    unitLabel.style.textDecoration = "underline";
+    unitLabel.style.marginLeft = "3px";
+    unitLabel.addEventListener('click', (event) => 
+        {
+            if (isGameEditorDisabled())
+            {
+                enableGameEditor();
+                return;
+            }
+            const label = event.target;
+            const maxIndex = window.editorUnitTypes.length;
+            window.editorTypeIndex = (window.editorTypeIndex + 1) < maxIndex ? window.editorTypeIndex + 1 : 0;
+            window.editorUnitType = window.editorUnitTypes[window.editorTypeIndex]
+            label.innerText = window.editorUnitType;
+            label.style.color = '';
+        });
+    unitLabel.addEventListener('mouseenter', (event) =>
+        {
+            if (isGameEditorDisabled())
+            {
+                return;
+            }
+            const label = event.target;
+            label.style.fontWeight = "bold";
+        });
+    unitLabel.addEventListener('mouseleave', (event) =>
+        {
+            const label = event.target;
+            label.style.fontWeight = "normal";
+        });
+    container.appendChild(unitLabel);
+}
+
+
+function resetDefaultColor(thisGame)
+{
+    const colorLabel = document.getElementById("colorLabel");
+    const defaultColor = thisGame.perspectiveColor;
+    const fontColor = GamesByEmail.Viktory2Game.resourcePack.teamFontColors[defaultColor];
+    colorLabel.style.color = fontColor;
+    const colorText = GamesByEmail.Viktory2Game.resourcePack.teamTitles[defaultColor];
+    colorLabel.innerText = colorText;
+    window.cacheColor = defaultColor;
+    const unitLabel = document.getElementById("unitLabel");
+    unitLabel.style.color = '';
+}
+
+
+function dimDefaultColor()
+{
+    const label = document.getElementById("colorLabel");
+    const fontColor = "thistle";
+    label.style.color = fontColor;
+    const unitLabel = document.getElementById("unitLabel");
+    unitLabel.style.color = 'thistle';
+}
+
+
+function editorInputListener(radioButton)
+{
+    radioButton.addEventListener('click', () => 
+        {
+            Object.keys(window.isEditorInputSelected).forEach(key => { window.isEditorInputSelected[key] = false; });
+            window.isEditorInputSelected[radioButton.value] = true;
+            radioButton.checked = window.isEditorInputSelected[radioButton.value] ? true : false; 
+            komputerLog("Pressed: " + radioButton.value);
+            enableGameEditor();
+        });
+}
+
+
+function getGameEditorTop()
 {
     const playerNotesOffset = 14;
     const playerNotesRect = document.getElementById('Foundation_Elemental_' + GameVersion + '_playerNotes').getBoundingClientRect();
@@ -6801,7 +7133,7 @@ function getBoardBuilderTop()
 }
 
 
-function getBoardBuilderLeft()
+function getGameEditorLeft()
 {
     const playerNotesOffset = 200;
     const playerNotesRect = document.getElementById('Foundation_Elemental_' + GameVersion + '_playerNotes').getBoundingClientRect();
@@ -6810,64 +7142,96 @@ function getBoardBuilderLeft()
 }
 
 
-function addBoardBuilderToggle()
+function addGameEditorToggle()
 {
     let toggle = document.createElement("input");
     toggle.setAttribute("type", "checkbox");
-    toggle.id = "BoardBuilderToggle";
-    toggle.addEventListener('click', boardBuilderToggleMouseClick);
-	let style = {position: 'absolute', top: getBoardBuilderToggleTop(), left:getBoardBuilderToggleLeft(), 'z-index': '9999'};
+    toggle.id = "GameEditorToggle";
+    toggle.addEventListener('click', gameEditorToggleClick);
+	let style = {position: 'absolute', top: getGameEditorToggleTop(), left:getGameEditorToggleLeft(), 'z-index': '9999'};
 	let toggleStyle = toggle.style;
 	Object.keys(style).forEach(key => toggleStyle[key] = style[key]);
     document.body.appendChild(toggle);
     // Toggle Label
     let toggleLabel = document.createElement("label");
-    toggleLabel.htmlFor = "BoardBuilderToggle";
+    toggleLabel.htmlFor = "GameEditorToggle";
     toggleLabel.innerText = "On";
-    style = {position: 'absolute', top: getBoardBuilderToggleLabelTop(), left: getBoardBuilderToggleLabelLeft(), 'z-index': '9999', 'font-size': '8px'};
+    style = {position: 'absolute', top: getGameEditorToggleLabelTop(), left: getGameEditorToggleLabelLeft(), 'z-index': '9999', 'font-size': '8px'};
     Object.keys(style).forEach(key => toggleLabel.style[key] = style[key]);
     document.body.appendChild(toggleLabel);
 }
 
 
-function getBoardBuilderToggleTop()
+function getGameEditorToggleTop()
 {
-    const boardBuilderTop = 12;
+    const gameEditorTop = 12;
     const playerNotesRect = document.getElementById('Foundation_Elemental_' + GameVersion + '_playerNotes').getBoundingClientRect();
-    return (window.scrollY + playerNotesRect.bottom + boardBuilderTop + 'px');
+    return (window.scrollY + playerNotesRect.bottom + gameEditorTop + 'px');
 }
 
 
-function getBoardBuilderToggleLeft()
+function getGameEditorToggleLeft()
 {
-    const boardBuilderLeft = 272;
-    const playerNotesRect = document.getElementById('Foundation_Elemental_' + GameVersion + '_playerNotes').getBoundingClientRect();
-    const playerNotesMidwayX = (playerNotesRect.left + playerNotesRect.right) * 0.3;
-    return (window.scrollX + playerNotesMidwayX + boardBuilderLeft + 'px');
-}
-
-
-function getBoardBuilderToggleLabelTop()
-{
-    const boardBuilderTop = 17;
-    const playerNotesRect = document.getElementById('Foundation_Elemental_' + GameVersion + '_playerNotes').getBoundingClientRect();
-    return (window.scrollY + playerNotesRect.bottom + boardBuilderTop + 'px');
-}
-
-
-function getBoardBuilderToggleLabelLeft()
-{
-    const boardBuilderLeft = 292;
+    const gameEditorLeft = 272;
     const playerNotesRect = document.getElementById('Foundation_Elemental_' + GameVersion + '_playerNotes').getBoundingClientRect();
     const playerNotesMidwayX = (playerNotesRect.left + playerNotesRect.right) * 0.3;
-    return (window.scrollX + playerNotesMidwayX + boardBuilderLeft + 'px');
+    return (window.scrollX + playerNotesMidwayX + gameEditorLeft + 'px');
 }
 
 
-function boardBuilderToggleMouseClick(event, toggle)
+function getGameEditorToggleLabelTop()
 {
-    toggle = event ? event.currentTarget : toggle;
+    const gameEditorTop = 17;
+    const playerNotesRect = document.getElementById('Foundation_Elemental_' + GameVersion + '_playerNotes').getBoundingClientRect();
+    return (window.scrollY + playerNotesRect.bottom + gameEditorTop + 'px');
+}
+
+
+function getGameEditorToggleLabelLeft()
+{
+    const gameEditorLeft = 292;
+    const playerNotesRect = document.getElementById('Foundation_Elemental_' + GameVersion + '_playerNotes').getBoundingClientRect();
+    const playerNotesMidwayX = (playerNotesRect.left + playerNotesRect.right) * 0.3;
+    return (window.scrollX + playerNotesMidwayX + gameEditorLeft + 'px');
+}
+
+
+function getHistoricOpponentToggleTop()
+{
+    const offsetY = 16;
+    const gameEditorRect = document.getElementById("GameEditor").getBoundingClientRect();
+    return (window.scrollY + gameEditorRect.bottom + offsetY + 'px');
+}
+
+
+function getHistoricOpponentToggleLeft()
+{
+    const offsetX = 5;
+    const gameEditorRect = document.getElementById("GameEditor").getBoundingClientRect();
+    return (window.scrollX + gameEditorRect.left + offsetX + 'px');
+}
+
+
+function getHistoricOpponentToggleLabelTop()
+{
+    const offsetY = 16;
+    const gameEditorRect = document.getElementById("GameEditor").getBoundingClientRect();
+    return (window.scrollY + gameEditorRect.bottom + offsetY + 'px');
+}
+
+
+function getHistoricOpponentToggleLabelLeft()
+{
+    const offsetX = 22;
+    const gameEditorRect = document.getElementById("GameEditor").getBoundingClientRect();
+    return (window.scrollX + gameEditorRect.left + offsetX + 'px');
+}
+
+
+function gameEditorToggleClick(event, toggle)
+{
     const thisGame = findGameForActiveTab(); 
+    toggle = event ? event.currentTarget : toggle;
     if (toggle.checked)
     {
         stopAndReset();
@@ -6875,34 +7239,21 @@ function boardBuilderToggleMouseClick(event, toggle)
         {
             thisGame.customizeMapDoAll(true);
         }
+        resetDefaultColor(thisGame);
+        window.cacheBoard = createCacheBoardValues(thisGame);
+        window.cacheVisibility = createCacheVisibility(thisGame);
+        window.nextVisibility = getNextVisibility();
+        window.resetUnits = getResetUnits(thisGame);
         window.cacheMovePhase = thisGame.movePhase;
         thisGame.movePhase = -1;
         thisGame.update();
-        document.addEventListener('mousedown', boardBuilderMouseDown);
-        document.addEventListener('mousemove', boardBuilderMouseMove);
-        document.addEventListener('mouseup', boardBuilderMouseUp);
-        komputerLog("Board Builder: On");
+        document.addEventListener('mousedown', gameEditorMouseDown);
+        document.addEventListener('mousemove', gameEditorMouseMove);
+        document.addEventListener('mouseup', gameEditorMouseUp);
+        komputerLog("Game Editor: On");
         thisGame.maybeHideOverlay();
-        maybeSelectDefaultTerrain();
-        setTimeout(function(){}, 1)
-        {
-            const title = document.getElementById("Foundation_Elemental_" + GameVersion + "_gameState");            
-            title.innerText = "Board Builder";
-            title.style.backgroundColor = "darkseagreen"
-            const content = getDocumentContent();
-            window.cacheContentBackgroundColor = content.style.backgroundColor;
-            content.style.backgroundColor = "seagreen";
-            content.style.cursor = "cell";
-            for (const piece of thisGame.pieces)
-            {
-                if (thisGame.isTargetPoint(piece.boardPoint))
-                {
-                    piece.setBorder(false);  
-                }
-            } 
-            const prompt = document.getElementById("Foundation_Elemental_" + GameVersion + "_gamePrompts");
-            prompt.innerText = "Game is paused. Customize terrain on any hex, then switch off the Board Builder to resume play.";
-        }
+        maybeSelectDefaultInput();
+        setTimeout(function(){ styleGameEditor(thisGame) }, 10);
     }
     else
     {
@@ -6912,14 +7263,131 @@ function boardBuilderToggleMouseClick(event, toggle)
         content.style.cursor = "auto";
         const title = document.getElementById("Foundation_Elemental_" + GameVersion + "_gameState");  
         title.style.backgroundColor = "";
-        document.removeEventListener('mousedown', boardBuilderMouseDown);
-        document.removeEventListener('mousemove', boardBuilderMouseMove);
-        document.removeEventListener('mouseup', boardBuilderMouseUp);
-        komputerLog("Board Builder: Off");
+        dimDefaultColor();
+        document.removeEventListener('mousedown', gameEditorMouseDown);
+        document.removeEventListener('mousemove', gameEditorMouseMove);
+        document.removeEventListener('mouseup', gameEditorMouseUp);
+        komputerLog("Game Editor: Off");
         thisGame.update();
-        thisGame.removeExcessPieces(0, true);
-        thisGame.removeExcessPieces(1, true);
+        removeExcessUnits(thisGame);
     }
+}
+
+
+function styleGameEditor(thisGame)
+{
+    const title = document.getElementById("Foundation_Elemental_" + GameVersion + "_gameState");            
+    title.innerText = "Game Editor";
+    title.style.backgroundColor = "darkseagreen"
+    const content = getDocumentContent();
+    const editorBackgroundColor = "rgb(31, 124, 72)"; // "seagreen" - 15.
+    if (content.style.backgroundColor !== editorBackgroundColor)
+    {
+        window.cacheContentBackgroundColor = content.style.backgroundColor;
+        content.style.backgroundColor = editorBackgroundColor;
+    } 
+    content.style.cursor = "cell";
+    for (const piece of thisGame.pieces)
+    {
+        if (thisGame.isTargetPoint(piece.boardPoint))
+        {
+            piece.setBorder(false);  
+        }
+    } 
+    const prompt = document.getElementById("Foundation_Elemental_" + GameVersion + "_gamePrompts");
+    prompt.innerText = "Game is paused. Customize any hex, then switch off the Game Editor to resume play.";
+}
+
+
+function removeExcessUnits(thisGame)
+{
+    let colorCount = thisGame.numberOfDistinctPlayers;
+    for (let i = 0; i < colorCount; i++)
+    {
+        let tempCapital = null;
+        if (!thisGame.pieces.findCapitalPiece(i))
+        {
+            tempCapital = getCenterPiece(thisGame).addUnit(i, "C");
+        }
+        thisGame.removeExcessPieces(i, true);
+        if (tempCapital)
+        {
+            tempCapital.piece.removeUnit(tempCapital);
+        }
+    } 
+}
+
+
+function createCacheBoardValues(thisGame)
+{
+    let cacheBoard = [];
+    for (const piece of thisGame.pieces)
+    {
+        cacheBoard.push(piece.boardValue);
+    }
+    return cacheBoard.join('');
+}
+
+
+function createCacheVisibility(thisGame)
+{
+    let cacheVis = [];
+    for (const piece of thisGame.pieces)
+    {
+        cacheVis.push(piece.hidden);
+    }
+    return cacheVis;
+}
+    
+    
+function getNextVisibility(piece = null)
+{
+    if (piece === null)
+    {
+        const thisGame = findGameForActiveTab();
+        let nextVisibility = [];
+        for (const piece of thisGame.pieces)
+        {
+            nextVisibility.push(!piece.hidden);
+        }
+        return nextVisibility;
+    }
+    if (!window.firstSelectedIndex)
+    {
+        window.firstSelectedIndex = piece.index;
+    }
+    return window.nextVisibility[window.firstSelectedIndex];
+}
+
+
+function getEditorUnitType()
+{
+    switch (window.editorUnitType)
+    {
+        case "Infantry":
+            return "i";
+        case "Cavalry":
+            return "c";
+        case "Artillery":
+            return "a";
+        case "Frigate":
+            return "f";
+        default:
+            console.log("Game Editor got unknown unit type: " + window.editorUnitType);
+            return "i";
+    }
+}
+
+
+function getEditorColor()
+{
+    return window.cacheColor;
+}
+
+
+function getResetValue(piece)
+{
+    return window.cacheBoard[piece.index];
 }
 
 
@@ -6937,55 +7405,490 @@ function getDocumentFooter()
 }
 
 
-function boardBuilderMouseDown(event)
+function gameEditorMouseDown(event, draggingMouse = false)
 {
-    if (isBoardBuilderDisabled())
+    if (isGameEditorDisabled())
     {
         return; 
     }
-    maybeSelectDefaultTerrain();
+    maybeSelectDefaultInput();
+    window.isMouseDown = true;
     const xOffset = document.getElementById("Foundation_Elemental_" + GameVersion + "_pieces").getBoundingClientRect().left + window.scrollX; 
     const yOffset = document.getElementById("Foundation_Elemental_" + GameVersion + "_pieces").getBoundingClientRect().top + window.scrollY; 
     const screenPoint = new Foundation.Point(event.pageX - xOffset, event.pageY - yOffset); 
-    const thisGame = findGameForActiveTab(); ;
-    let boardPoint = thisGame.boardPointFromScreenPoint(screenPoint);   
-    let piece = thisGame.pieces.findAtPoint(boardPoint);
+    const thisGame = findGameForActiveTab(); 
+    const boardPoint = thisGame.boardPointFromScreenPoint(screenPoint);   
+    const piece = thisGame.pieces.findAtPoint(boardPoint);
     const reserveIndex = thisGame.pieces.length - 1;
     const isValidHex = (piece && (piece.index !== reserveIndex) && !piece.isPerimeter());
-    if (isValidHex)
+    if (!isValidHex)
     {
-        const newLand = "l";
-        const boardValues = {
-            "Plains" : "p",
-            "Grass" : "g",
-            "Forest" : "f",
-            "Mountain" : "m",
-            "Water" : "w"
-        } 
-        for (let key in window.isTerrainSelected)
-        {
-            if (window.isTerrainSelected[key])
-            {
-                piece.boardValue = newLand;
-                piece.setValue(boardValues[key], false);
-                piece.hidden = false;
-                piece.setVisibility(piece.hidden); 
-                const visible = 2;
-                let boardVisArray = thisGame.boardVisibility.split("");
-                boardVisArray[piece.index] = visible;
-                thisGame.boardVisibility = boardVisArray.join("");
-            }        
-        }
+        return;
     }
-    window.isMouseDown = true;
+    const inputValues = {
+        "Plains" : {type: "terrain", data: "p"},
+        "Grass" : {type: "terrain", data: "g"},
+        "Forest" : {type: "terrain", data: "f"},
+        "Mountain" : {type: "terrain", data: "m"},
+        "Water" : {type: "terrain", data: "w"},
+        "Capital" : {type: "capital", data: null },
+        "Settlement" : {type: "build", data: null },
+        "Unit" : { type: "military", data: null },
+        "Color" : {type: "color", data: null },
+        "Visibility" : {type: "visibility", data: null },
+        "Reset Changes" : {type: "reset", data: null }
+    } 
+    for (let key in window.isEditorInputSelected)
+    {
+        if (!window.isEditorInputSelected[key])
+        {
+            continue;
+        }
+        if (draggingMouse && piece.index === window.lastEditIndex)
+        {
+            return;
+        }
+        let output = inputValues[key];
+        if (output.type === "terrain")
+        {
+            drawTerrain(thisGame, piece, output.data);
+        }
+        else if (output.type === "capital")
+        {
+            drawCapital(thisGame, piece);
+        }
+        else if (output.type === "build")
+        {
+            output.data = getNextBuild(piece);
+            drawBuild(thisGame, piece, output.data);
+        }
+        else if (output.type === "military")
+        {
+            output.data = getEditorUnitType();
+            drawMilitary(thisGame, piece, output.data, draggingMouse);
+        }
+        else if (output.type === "color")
+        {
+            output.data = getEditorColor();
+            drawColor(thisGame, piece, output.data);
+        }
+        else if (output.type === "visibility")
+        {
+            output.data = getNextVisibility(piece);
+            drawVisibility(thisGame, piece, output.data);
+        }
+        else if (output.type === "reset")
+        {
+            output.data = getResetValue(piece);
+            drawReset(thisGame, piece, output.data);
+        }
+        window.lastEditIndex = piece.index;
+        return;
+    }
 }
 
 
-function maybeSelectDefaultTerrain()
+function getNextBuild(piece)
 {
-    for (const terrain in window.isTerrainSelected)
+    const anyColor = -1;
+    if (piece.hasTown(anyColor))
     {
-        if (window.isTerrainSelected[terrain] === true)
+        return 2;
+    }
+    if (piece.hasCity(anyColor))
+    {
+        return 0;
+    }
+    return 1;
+}
+
+
+function getResetUnits(thisGame)
+{
+    let allResetUnits = [];
+    let pieceUnits = [];
+    for (const piece of thisGame.pieces)
+    {
+        for (const unit of piece.units)
+        {
+            pieceUnits.push(unit);
+        }
+        allResetUnits.push(pieceUnits);
+        pieceUnits = [];
+    }
+    return allResetUnits;
+}
+
+
+function drawTerrain(thisGame, piece, output)
+{
+    if (piece.boardValue !== output)
+    {
+        const newLand = "l"
+        piece.boardValue = newLand;
+        piece.setValue(output, false);
+        const anyColor = -1;
+        if (piece.hasCivilization(anyColor))
+        {
+            thisGame.update();
+            styleGameEditor(thisGame);
+            removeExcessUnits(thisGame);
+        }
+    }
+    reveal(thisGame, piece);
+}
+
+
+function drawCapital(thisGame, piece)
+{
+    const color = window.cacheColor;
+    const oldCapitalPiece = thisGame.pieces.findCapitalPiece(color);
+    if (oldCapitalPiece)
+    {
+        const oldCapitalUnit = oldCapitalPiece.findCapital(color);
+        oldCapitalPiece.removeUnit(oldCapitalUnit);
+        oldCapitalPiece.updateUnitDisplay();
+        if (oldCapitalPiece.index === piece.index)
+        {
+            return;
+        }
+    }
+    const anyColor = -1;
+    let civ = piece.findCivilization(anyColor)
+    if (civ)
+    {
+        civ.color = color;
+    }
+    else
+    {
+        const addTown = 1;
+        drawBuild(thisGame, piece, addTown);
+    }
+    const blockingCapital = piece.findOpponentCapital(color);
+    if (blockingCapital)
+    {
+        blockingCapital.color = color;
+        blockingCapital.placedThisTurn = false;
+    }
+    else
+    {
+        let newCapital = piece.addUnit(color, "C");
+        newCapital.placedThisTurn = false;
+    }
+    piece.updateUnitDisplay();
+    thisGame.update();
+    styleGameEditor(thisGame);
+}
+
+
+function reveal(thisGame, piece)
+{
+    if (piece.hidden)
+    {
+        piece.hidden = false;
+        piece.setVisibility(piece.hidden); 
+        const visible = 2;
+        let boardVisArray = thisGame.boardVisibility.split("");
+        boardVisArray[piece.index] = visible;
+        thisGame.boardVisibility = boardVisArray.join("");
+    }
+}
+
+
+function drawBuild(thisGame, piece, output)
+{
+    const anyColor = -1;
+    const clear = 0;
+    const addTown = 1;
+    const addCity = 2;
+    let indeciesToReveal = null;
+    if (output === addTown)
+    {
+        piece.addUnit(window.cacheColor, "t");
+        indeciesToReveal = piece.getAdjacentIndecies(addTown);
+        indeciesToReveal.push(piece.index);
+        convertEnemies(piece, window.cacheColor);
+    }
+    else if (output === addCity)
+    {
+        const town = piece.findCivilization(anyColor);
+        if (town)
+        {
+            piece.removeUnit(town);
+            piece.addUnit(town.color, "y");
+            indeciesToReveal = piece.getAdjacentIndecies(addCity);
+            indeciesToReveal.push(piece.index);
+            convertEnemies(piece, town.color);
+        }
+    }
+    else if (output === clear)
+    {
+        const civ = piece.findCivilization(anyColor);
+        if (civ)
+        {
+            piece.removeUnit(civ);
+        }
+    }            
+    if (indeciesToReveal)
+    {
+        revealPieces(thisGame, indeciesToReveal);
+    }
+    piece.updateUnitDisplay();
+    thisGame.update();
+    styleGameEditor(thisGame);
+}
+
+
+function convertEnemies(piece, color)
+{
+    for (let unit of piece.units)
+    {
+        if ((unit.isMilitary() || unit.isCivilization()) && unit.color !== color)
+        {
+            unit.color = color;
+        }
+    }
+}
+
+
+function revealPieces(thisGame, indeciesToReveal)
+{
+    let boardVisArray = thisGame.boardVisibility.split("");
+    for (const index of indeciesToReveal)
+    {
+        const pieceToReveal = thisGame.pieces[index];
+        if (pieceToReveal.hidden)
+        {
+            pieceToReveal.hidden = false;
+            pieceToReveal.setVisibility(pieceToReveal.hidden); 
+            const visible = 2;
+            boardVisArray[pieceToReveal.index] = visible;
+        }
+    }
+    thisGame.boardVisibility = boardVisArray.join("");
+}
+
+
+function drawVisibility(thisGame, piece, output)
+{
+    if (piece.hidden !== output)
+    {
+        piece.hidden = output;
+        piece.setVisibility(piece.hidden); 
+        const visible = piece.hidden ? 0 : 2;
+        let boardVisArray = thisGame.boardVisibility.split("");
+        boardVisArray[piece.index] = visible;
+        thisGame.boardVisibility = boardVisArray.join("");
+    }
+}
+
+
+function drawMilitary(thisGame, piece, type, draggingMouse)
+{
+    const color = window.cacheColor;
+    const aboveBoardText = thisGame.getElement("aboveBoard");
+    const hasWarning = aboveBoardText ? aboveBoardText.innerText.substr(0, 'Warning'.length) === 'Warning' : false;
+    if (hasWarning)
+    {
+        if (removeExcessUnit(piece, color, type))
+        {
+            thisGame.setAboveBoardHtml('', 999);
+            return;
+        }
+        forceRemoveUnit(thisGame, piece, color, type);
+        removeExcessUnits(thisGame);
+        thisGame.setAboveBoardHtml('', 999);
+        return;
+    } 
+    if (draggingMouse)
+    {
+        lastPiece = thisGame.pieces[window.lastEditIndex];
+        if (removeExcessUnit(lastPiece, color, type))
+        {
+            drawUnit(thisGame, piece, color, type);
+        }
+        else
+        {
+            removeExcessUnits(thisGame);
+        }
+        return;
+    }
+    const controlsCapital = true;
+    const shouldSelect = false;
+    let hasReserveUnit = getHasPlayableReserveUnit(thisGame, controlsCapital, shouldSelect, color, type);
+    if (hasReserveUnit)
+    {
+        const reserves = thisGame.teams.findTeamByColor(color).reserveUnits;
+        const typeIndex = reserves.indexOf(type);
+        let reserveArray = reserves.split("");
+        reserveArray.splice(typeIndex, 1);
+        thisGame.player.team.reserveUnits = reserveArray.join("");
+        drawUnit(thisGame, piece, color, type);
+        return;
+    }
+    drawUnit(thisGame, piece, color, type);
+    if (needsExtrasRemovedForAnyColor(thisGame))
+    {
+        thisGame.setAboveBoardHtml(getUnitWarning(), 999);
+    }
+}
+
+
+function removeExcessUnit(piece, color, type)
+{
+    const excessUnit = piece.findUnit(color, type);
+    if (excessUnit)
+    {
+        piece.removeUnit(excessUnit);
+        piece.updateUnitDisplay();
+        return true;
+    }
+    return false;
+}
+
+
+// Clone of codebase function that works on all player colors.
+function needsExtrasRemovedForAnyColor(thisGame)
+{
+    const colorCount = thisGame.numberOfDistinctPlayers;
+    for (let color = 0; color < colorCount; color++)
+    {
+        let unitCounts = thisGame.pieces.getUnitCounts(color);
+        thisGame.extraUnits = new Array();
+        thisGame.extraUnits["f"] = thisGame.getFrigateDifference(unitCounts);
+        thisGame.extraUnits["a"] = thisGame.getArtilleryDifference(unitCounts);
+        thisGame.extraUnits["c"] = thisGame.getCavalryDifference(unitCounts);
+        thisGame.extraUnits["i"] = thisGame.getInfantryDifference(unitCounts);
+        let needed=false;
+        for (let i in thisGame.extraUnits)
+        {
+            if (thisGame.extraUnits[i] < 0)
+            {
+                thisGame.extraUnits[i] *= -1;
+                needed=true;
+            }
+            else
+            {
+                thisGame.extraUnits[i] = 0;
+            }
+        }
+        if (!needed)
+        {
+            thisGame.extraUnits=null;
+            continue;
+        }
+        return needed;
+    }
+}
+
+
+function drawUnit(thisGame, piece, color, type)
+{
+    convertEnemies(piece, color);
+    let indeciesToReveal = piece.getAdjacentIndecies(1);
+    indeciesToReveal.push(piece.index);
+    revealPieces(thisGame, indeciesToReveal);
+    const newUnit = piece.addUnit(color, type);
+    newUnit.movementComplete = true;    
+    piece.updateUnitDisplay();
+    thisGame.update();
+    styleGameEditor(thisGame);
+}
+
+
+function getUnitWarning()
+{
+    return "<h2 style='color:red'>Warning: Settlements too few. Click unit to recall.</h2>";
+}
+
+
+function forceRemoveUnit(thisGame, piece, color, type)
+{
+    // Try to remove unit near selected piece.
+    let removed = false;
+    const adjacentIndecies = piece.getAdjacentIndecies(2);
+    for (const index of adjacentIndecies)
+    {
+        const adjacentPiece = thisGame.pieces[index];
+        if (adjacentPiece.hidden)
+        {
+            continue;
+        }
+        removed = removeExcessUnit(adjacentPiece, color, type);
+        if (removed)
+        {
+            return;
+        }
+    }
+    // Remove any unit.
+    for (const otherPiece of thisGame.pieces)
+    {
+        if (otherPiece.index === piece.index)
+        {
+            continue;
+        }
+        removed = removeExcessUnit(otherPiece, color, type);
+        if (removed)
+        {
+            return;
+        }
+    } 
+}
+
+
+function drawColor(thisGame, piece, output)
+{
+    let update = false;
+    for (let unit of piece.units)
+    {
+        if (unit.color !== output && !unit.isCapital())
+        {
+            unit.color = output;
+            update = true;
+        }
+    }
+    if (update)
+    {
+        piece.updateUnitDisplay();
+        thisGame.update();
+        styleGameEditor(thisGame);
+        removeExcessUnits(thisGame);
+    }
+}
+
+
+function drawReset(thisGame, piece, output)
+{
+    const outVis = window.cacheVisibility[piece.index];
+    if ((output !== piece.boardValue) || (outVis !== piece.hidden))
+    {
+        const newLand = "l";
+        piece.boardValue = newLand;
+        piece.setValue(output, false);
+        piece.hidden = outVis;
+        piece.setVisibility(piece.hidden); 
+        const visible = piece.hidden ? 0 : 2;
+        let boardVisArray = thisGame.boardVisibility.split("");
+        boardVisArray[piece.index] = visible;
+        thisGame.boardVisibility = boardVisArray.join("");
+    }
+    piece.removeAllUnits(false);
+    for (let unit of window.resetUnits[piece.index])
+    {
+        piece.units.push(unit);
+    }
+    thisGame.update();
+    styleGameEditor(thisGame);
+    removeExcessUnits(thisGame);    
+    piece.updateUnitDisplay();
+}
+
+
+function maybeSelectDefaultInput()
+{
+    for (const input in window.isEditorInputSelected)
+    {
+        if (window.isEditorInputSelected[input] === true)
         {
             return;
         }
@@ -6994,55 +7897,89 @@ function maybeSelectDefaultTerrain()
     if (radioButton)
     {
         radioButton.checked = true;
-        window.isTerrainSelected.Plains = true;
+        window.isEditorInputSelected.Plains = true;
     }
 }
 
 
-function boardBuilderMouseMove(event)
+function addHistoricOpponentToggle()
+{
+    // Toggle
+    let toggle = document.createElement("input");
+    toggle.setAttribute("type", "checkbox");
+    toggle.id = "HistoricalOpponentToggle";
+    let style = {position: 'absolute', top: getHistoricOpponentToggleTop(), left:getHistoricOpponentToggleLeft(), 'z-index': '9999'};
+    let toggleStyle = toggle.style;
+    Object.keys(style).forEach(key => toggleStyle[key] = style[key]);
+    toggle.addEventListener('click', historicOpponentToggleClick);
+    document.body.appendChild(toggle);
+    // Label
+    let toggleLabel = document.createElement("label");
+    toggleLabel.htmlFor = "HistoricalOpponentToggle";
+    toggleLabel.innerText = "Random Historic Nations";
+    style = {position: 'absolute', top: getHistoricOpponentToggleLabelTop(), left: getHistoricOpponentToggleLabelLeft(), 'z-index': '9999', 'font-size': '10px', 'font-family': 'Veranda', 'padding': '4px'};
+    Object.keys(style).forEach(key => toggleLabel.style[key] = style[key]);
+    document.body.appendChild(toggleLabel);
+}
+
+
+function historicOpponentToggleClick()
+{
+    const defaultNames = ["Red","Yellow","Green","Cyan","Blue","Magenta","Orange","Brown"];
+    const historicNames = ['British', 'Dutch', 'French', 'Portugese', 'Prussians', 'Russians', 'Spanish', 'Ottomans', 'Persians', 'Mughals', 'Qing', 'Siamese', 'Ashanti', 'Zulu', 'Americans', 'Comanche'];
+ 
+
+
+}
+
+
+
+function gameEditorMouseMove(event)
 {
     if (window.isMouseDown)
     {
-        boardBuilderMouseDown(event);
+        gameEditorMouseDown(event, true);
     }
 }
 
 
-function boardBuilderMouseUp()
+function gameEditorMouseUp()
 {
     window.isMouseDown = false;
+    window.firstSelectedIndex = null;
+    window.nextVisibility = getNextVisibility();
 }
 
 
-function disableBoardBuilder()
+function disableGameEditor()
 {
-    const toggle = document.getElementById("BoardBuilderToggle");
+    const toggle = document.getElementById("GameEditorToggle");
     if (toggle && toggle.checked)
     {
         toggle.checked = false;
-        boardBuilderToggleMouseClick(null, toggle);
+        historicOpponentToggleClick(null, toggle);
     }
 }
 
 
-function isBoardBuilderDisabled()
+function isGameEditorDisabled()
 {
-    const toggle = document.getElementById("BoardBuilderToggle");
+    const toggle = document.getElementById("GameEditorToggle");
     return (!toggle || !toggle.checked) ? true : false;
 }
 
 
-function enableBoardBuilder()
+function enableGameEditor()
 {
     if (!isOnPreviewTab())
     {
         return;
     }
-    const toggle = document.getElementById("BoardBuilderToggle");
+    const toggle = document.getElementById("GameEditorToggle");
     if (toggle && !toggle.checked)
     {
         toggle.checked = true;
-        boardBuilderToggleMouseClick(null, toggle);
+        historicOpponentToggleClick(null, toggle);
     }
 }
 
@@ -7062,7 +7999,7 @@ function addLocalMultiplayer(thisGame)
         multiplayerForm.style.fontSize = "10px";
         multiplayerForm.style.fontFamily = "Verdana";
         multiplayerForm.style.padding = '4px';
-        multiplayerForm.innerText = "Local Multiplayer";
+        multiplayerForm.innerText = "All Maps";
         document.body.appendChild(multiplayerForm);
         addMultiplayerRestartButton(thisGame, multiplayerForm);
         window.isPlayerCountSelected = {};
@@ -7139,7 +8076,7 @@ function getMultiplayerFormLeft()
 function multiplayerRestartButtonMouseClick(thisGame)
 {
     stopAndReset();
-    disableBoardBuilder();
+    disableGameEditor();
     expandMultiplayerForm();
     patchPerspective(thisGame); 
     const formIndex = Foundation.$registry.length - 1;
@@ -7300,7 +8237,7 @@ function addMultiplayerRestartButton(thisGame, form)
 }
 
 
-// Sound 
+// Napoleonic Sound Effects 
 
 
 function addSound()
