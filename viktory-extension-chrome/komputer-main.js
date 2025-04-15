@@ -1,6 +1,14 @@
 /* 
     Viktory II Komputer 
-    Add computer opponents, gameplay sound, and enhancements for Viktory II on GamesByEmail. 
+    Adds enhancements for Viktory II on GamesByEmail including:
+     - Komputer Opponent AI
+     - Historic Nation Visuals
+     - Gameplay Sound System
+     - Movement Visuals
+     - Dark Mode Visuals
+     - Game Editor
+     - Performance Upgrades
+     - Miscellaneous Patches
     By Stephen Montague 
     stephen.montague.viktory@gmail.com 
 */
@@ -61,7 +69,8 @@ function setupGameExtension()
     {
         patchControls();
         addTouchSupport();
-        patchGamePrototype();
+        patchGamePrototype(thisGame);
+        patchPiecesPrototype(thisGame);
         patchPiecePrototype();
         patchUnitPrototype();
         if (!document.getElementById("KomputerButton_" + GameVersion))
@@ -71,8 +80,10 @@ function setupGameExtension()
             addStopButton("Stop", stopKomputerClick);
             addDarkModeToggle();
             addGameEditor(thisGame);
+            addNations(thisGame);
             addLocalMultiplayer(thisGame);
             addSound(thisGame);
+            addTurboToggle();
             cacheElementsForStyling();
         }
         window.onerror = function() 
@@ -240,6 +251,7 @@ function resetGlobals(resetKomputerButton = false)
     window.currentPlayerTurn = thisGame.perspectiveColor;
     window.isSmallBoard = thisGame.pieces.length === 62;
     window.isLargeBoard = !window.isSmallBoard;
+    window.isExtraLargeBoard = thisGame.numberOfDistinctPlayers > 4;
     window.isWorldExplored = markIsWorldExplored(thisGame);
     window.moveIntervalIds = [];
     window.reserveIntervalIds = [];
@@ -352,7 +364,7 @@ function handleWinState(thisGame)
 
 function moveUnits(thisGame)
 {
-    const moveIntervalPeriod = 1300;
+    const moveIntervalPeriod = getTurbo(1300);
     const initialDelay = 100;
     setTimeout(function(){
         switch (window.moveWave)
@@ -506,7 +518,7 @@ function prepareNextUnit(unitList)
 {
     // If the last moved unit is in the list but not first, swap it to first.
     const lastMovedUnit = window.lastMovedUnit;
-    if (!unitList || unitList.length === 0 || !lastMovedUnit)
+    if (!unitList || unitList.length === 0 || !lastMovedUnit || !lastMovedUnit.piece)
     {
         return;
     }
@@ -745,7 +757,7 @@ async function moveEachUnit(thisGame, movableUnits, intervalPeriod, isHoldingWav
                         const transitTime = 100 + bufferTime;
                         if (transitTime > 100)
                         {
-                            playSound("move_" + unit.type);
+                            playMoveSound(unit);
                         }
                         setTimeout(function()
                         {
@@ -758,7 +770,7 @@ async function moveEachUnit(thisGame, movableUnits, intervalPeriod, isHoldingWav
                                 moveUnitSimulateMouseUp(thisGame, destinationScreenPoint);
                                 if (transitTime === 100)
                                 {
-                                    playSound("move_" + unit.type);
+                                    playMoveSound(unit);
                                 }
                                 hideEndTurnButtons();
                                 // Commit to explore.
@@ -787,7 +799,7 @@ async function moveEachUnit(thisGame, movableUnits, intervalPeriod, isHoldingWav
                     else
                     {
                         komputerLog("Failed to select unit for move. Logging unit.");
-                        console.log(unit);
+                        komputerLog(unit);
                         clearMovementFlags();
                         window.lastMovedUnit = null;
                     }   
@@ -1028,7 +1040,7 @@ function settleExploredTerrain(thisGame, unit)
             window.isExploring = false;                
             setTimeout(function(){ runKomputer(thisGame) }, 100)
         }, 200);
-    }, 600);
+    }, getTurbo(600));
 }
 
 
@@ -1036,7 +1048,7 @@ function handleMoveTrail(thisGame, unit, possibleMoves, movePoint)
 {
     unit.setHilite(true);
     let bufferTime = 0;
-    if (movePoint.spacesNeeded < 2)
+    if (window.KomputerTurbo || movePoint.spacesNeeded < 2)
     {
         return bufferTime;
     }
@@ -1093,6 +1105,10 @@ function handleMoveTrail(thisGame, unit, possibleMoves, movePoint)
                 const transitPiece = thisGame.pieces[transitPoint.index];
                 const transitUnit = transitPiece.addUnit(thisGame.perspectiveColor, unit.type);
                 transitUnit.movementComplete = false;
+                if (window.KomputerNations.isActive)
+                {
+                    transitUnit.maskColor = getSelectedMaskColor(transitUnit);
+                }
                 transitPiece.updateUnitDisplay();
                 setTimeout(function()
                 {
@@ -1192,7 +1208,7 @@ function decideHowToContinueMove(thisGame, movableUnits, unit, finalMoveWave)
         bombard(thisGame, unit, unit.getBombardables());
         return;
     }
-    // If more units, when the last unit is done, move the next unit.
+    // If more units, when the last-moved unit is done, move the next unit.
     if ((window.movingUnitIndex + 1) < movableUnits.length)
     {
         if (window.lastMovedUnit)
@@ -1202,6 +1218,14 @@ function decideHowToContinueMove(thisGame, movableUnits, unit, finalMoveWave)
                                 lastMovedUnit === thisGame.pieces[lastMovedUnit.piece.index].units[lastMovedUnit.index]);
             if (isValidUnit && !lastMovedUnit.movementComplete && !lastMovedUnit.holding)
             {
+                for (let i = 0; i < movableUnits.length; i++)
+                {
+                    // Confirm index to ensure the correct unit moves next. 
+                    if (lastMovedUnit === movableUnits[i])
+                    {
+                        window.movingUnitIndex = i;
+                    }
+                }
                 return;
             }
         } 
@@ -2431,7 +2455,7 @@ function bombard(thisGame, unit, bombardablePoints)
             const hasFired = bombardUnitsSimulateMouseUp(thisGame, targetScreenPoint);
             if (hasFired)
             {
-                const commitDelay = 600;
+                const commitDelay = getTurbo(600);
                 setTimeout(function(){
                     thisGame.overlayCommitOnClick();
                     setTimeout(function(){ replaceBattleMessage(thisGame) }, 16);
@@ -2448,7 +2472,7 @@ function bombard(thisGame, unit, bombardablePoints)
                                 applyHits(thisGame, data.piece.index, data, true);
                             }
                         }
-                        const reviewDelay = 800;
+                        const reviewDelay = getTurbo(800);
                         // Double check this is set. Use game reference for reliability.
                         thisGame.pieces[unit.piece.index].units[unit.index].hasBombarded = true;
                         thisGame.pieces[unit.piece.index].units[unit.index].noBombard = true;
@@ -2530,25 +2554,23 @@ function fightBattle(thisGame, battlePiece, isReserveBattle = false)
     clearReserveIntervals();
     commitExploration(thisGame);
     hideEndTurnButtons();
-    playSound("battleRoll");
-    const anyColor = -1;
-    if (battlePiece.hasCavalry(anyColor))
-    {
-        playSound("battleCavalry");
-    }
-    if (battlePiece.hasArtillery(anyColor) || battlePiece.hasFrigate(anyColor))
-    {
-        playSound("battleArtillery");
-    }
+    playInitBattleSounds(battlePiece);
     const markBattleDelay = 500;
     setTimeout(function()
     {
         selectBattle(thisGame, battlePiece);
         const rollDelay = 600;
+        let firstRoll = true;
         setTimeout(function roll(){
+            let doPreBattle = false;
+            const anyColor = -1;
             if (thisGame.pieces[battlePiece.index].hasArtillery(anyColor))
             {
                 playSound("battleArtillery");
+                if (firstRoll)
+                {
+                    doPreBattle = true;
+                }
             }
             thisGame.overlayCommitOnClick();
             setTimeout(function(){ replaceBattleMessage(thisGame) }, 100);
@@ -2567,7 +2589,7 @@ function fightBattle(thisGame, battlePiece, isReserveBattle = false)
                     }
                 }
                 // Roll again or close after review.
-                const battleReviewDelay = 1700;
+                const battleReviewDelay = getTurbo(1700);
                 setTimeout(function handleRollResult(){ 
                     if (!isWon(thisGame))
                     {
@@ -2578,11 +2600,18 @@ function fightBattle(thisGame, battlePiece, isReserveBattle = false)
                         const rollResult = document.getElementById("Foundation_Elemental_" + GameVersion + "_battleOk");
                         if (rollResult)
                         {
-                            thisGame.pieces[battlePiece.index].battleOkClick(thisGame.player.team.color);
+                            if (doPreBattle)
+                            {
+                                thisGame.pieces[battlePiece.index].preBattleOkClick(thisGame.player.team.color);
+                            }
+                            else
+                            {
+                                thisGame.pieces[battlePiece.index].battleOkClick(thisGame.player.team.color);
+                            }
                             window.waitCount = 0;
                             hideEndTurnButtons();
                             replaceBattleMessage(thisGame);
-                            const reRollDelay = 1200;
+                            const reRollDelay = getTurbo(1200);
                             setTimeout(function(){
                                 const rollRequired = document.getElementById("Foundation_Elemental_" + GameVersion + "_overlayCommit");
                                 if (rollRequired)
@@ -2593,6 +2622,7 @@ function fightBattle(thisGame, battlePiece, isReserveBattle = false)
                                         return;
                                     }
                                     playSound("battleRollShort");
+                                    firstRoll = false;
                                     setTimeout(function reroll(){ roll() }, 300);
                                 }
                                 else
@@ -2677,6 +2707,28 @@ function fightBattle(thisGame, battlePiece, isReserveBattle = false)
 }
 
 
+function playInitBattleSounds(battlePiece)
+{
+    playSound("battleRoll");
+    const anyColor = -1;
+    if (battlePiece.hasCavalry(anyColor))
+    {
+        if (window.KomputerNations.isActive)
+        {
+            playCavalryBattle(battlePiece);
+        }
+        else
+        {
+            playSound("battleCavalry");
+        }
+    }
+    if (battlePiece.hasArtillery(anyColor) || battlePiece.hasFrigate(anyColor))
+    {
+        playSound("battleArtillery");
+    }    
+}
+
+
 function isWon(thisGame)
 {
     return thisGame.movePhase === 0;
@@ -2707,8 +2759,19 @@ function replaceBattleMessage(thisGame)
     let battleMessage = document.querySelector("#Foundation_Elemental_" + GameVersion + "_centerOverPiece > tbody > tr:nth-child(3) > td");
     if (battleMessage && battleMessage.innerText.substr(0, 3) === "You")
     {
-        const teamColor = GamesByEmail.Viktory2Game.resourcePack.teamTitles[thisGame.perspectiveColor];
-        battleMessage.innerText = teamColor + " " + battleMessage.innerText.substr(3);
+        let teamName = null;
+        if (window.KomputerNations.isActive)
+        {
+            const nationSelector = document.getElementById("NationSelector_" + thisGame.perspectiveColor);
+            const nation = window.KomputerNations.menuOptions[nationSelector.selectedIndex];
+            const suffix = window.KomputerNations.menuPluralAddSuffix[nation] ? "s" : "";
+            teamName = "The " + nation + suffix;
+        }
+        else
+        {
+            teamName = GamesByEmail.Viktory2Game.resourcePack.teamTitles[thisGame.perspectiveColor];
+        }
+        battleMessage.innerText = teamName + " " + battleMessage.innerText.substr(3);
     }
 }
 
@@ -2742,7 +2805,7 @@ function applyHits(thisGame, pieceIndex, battleData, isBombarding = false)
     }
     if (isBombarding)
     {
-        setTimeout(function(){ thisPiece.bombardOkClick(attackerColor) }, 400);
+        setTimeout(function(){ thisPiece.bombardOkClick(attackerColor) }, getTurbo(400));
     }
 }
 
@@ -2765,7 +2828,7 @@ function placeReserves(thisGame)
 {
     clearMoveIntervals();
     clearReserveIntervals();
-    window.reserveIntervalIds.push(setInterval(placeReserveUnit, 1200, thisGame));
+    window.reserveIntervalIds.push(setInterval(placeReserveUnit, getTurbo(1200), thisGame));
 }
 
 
@@ -2890,7 +2953,7 @@ function settleCivExploredTerrain(thisGame, civBoardPoint)
                     window.isExploring = false;
                     runKomputer(thisGame);
                 }, 128);
-            }, 600);
+            }, getTurbo(600));
         }
         else
         {
@@ -5465,6 +5528,102 @@ function addKomputerFrigateMovables(unit, movables,x,y,allowance,distance,lastWa
 
 function patchUnitPrototype()
 {
+    GamesByEmail.Viktory2Unit.prototype.setVisibility = function(visible)
+    {
+        if (!this || !this.piece)
+        {
+            return;
+        }
+        let element = this.getElement();
+        if (element)
+        {
+            element.style.visibility=(visible ? "visible" : "hidden");
+            for (var i=0;i<this.cargo.length;i++)
+            {
+                this.getElement(i).style.visibility=(visible ? "visible" : "hidden");
+            }
+        }
+    }
+
+
+    // Support clip rectangles for nation sprites. 
+    GamesByEmail.Viktory2Unit.prototype.getClipRect = function (hilite,piece,loaded)
+    {
+        swapColorForMask(this);
+       if (!piece)
+          piece=this.piece;
+       var rect;
+       if (this.isColorBlind && this.isMilitary())
+          rect=piece.pieces.game.board.unitRects[this.type+(loaded ? "c" : "F")].clone();
+       else
+          rect=piece.pieces.game.board.unitRects[this.type+(loaded ? "c" : (this.movementComplete || this.showStationary ? (this.hasBombarded ? "b" : "F") : ""))].clone();
+       if (this.color > 17)
+        {
+            rect.x = rect.x + 600;
+        } 
+       else if (this.color > 8)
+        {
+            rect.x = rect.x + 300;
+        } 
+       if (this.color>0 || this.isColorBlind)
+        {
+            rect.add(piece.pieces.game.board.unitRects['co'].clone().scale(this.isColorBlind ? 8 :  this.color % 9));
+        }
+       if (hilite)
+          rect.add(piece.pieces.game.board.unitRects['ho']);
+       revertColorFromMask(this);
+       return rect;
+    }
+
+
+    GamesByEmail.Viktory2Unit.prototype.getCargoClip = function(unitType,hilite)
+    {
+        swapColorForMask(this);
+       var rect=this.piece.pieces.game.board.unitRects[unitType.toLowerCase()+"c"].clone();
+       if (this.color > 17)
+        {
+            rect.x = rect.x + 600;
+        } 
+       else if (this.color > 8)
+        {
+            rect.x = rect.x + 300;
+        } 
+       if (this.color>0 || this.isColorBlind)
+          rect.add(this.piece.pieces.game.board.unitRects['co'].clone().scale(this.isColorBlind ? 8 :  this.color % 9));
+       if (hilite)
+          rect.add(this.piece.pieces.game.board.unitRects['ho']);
+       revertColorFromMask(this);
+       return rect;
+    }
+
+
+    GamesByEmail.Viktory2Unit.prototype.unloadCargo = function(piece,update)
+    {
+       var unitType=this.getActiveCargoType();
+       this.cargo=this.cargo.substr(0,this.activeCargoIndex)+this.cargo.substr(this.activeCargoIndex+1);
+       if (piece)
+       {
+          this.cargoUnloaded++;
+          this.disembarkIndex=piece.index;
+          this.movementComplete=true;
+          var unit=piece.addUnit(this.color,unitType);
+          unit.placedThisTurn=false;
+          unit.movementComplete=true;
+          unit.noBombard=true;
+          unit.retreatIndex=this.piece.index;
+          if (window.KomputerNations.isActive)
+        {
+            unit.maskColor = getSelectedMaskColor(unit);
+        }
+          if (update)
+             piece.updateUnitDisplay();
+       }
+       if (update)
+          this.piece.updateUnitDisplay();
+       return unitType;
+    }
+
+
     // Patch adds a check for null before accessing each element. 
     GamesByEmail.Viktory2Unit.prototype.setHilite = function (hiliteOn) 
     {
@@ -5491,9 +5650,122 @@ function patchUnitPrototype()
 }
 
 
-// Patch adds a check for array before accessing. 
+function patchPiecesPrototype(thisGame)
+{
+    GamesByEmail.Viktory2Pieces.prototype.updateUnitDisplays = function ()
+    {
+        if (window.KomputerNations.isActive)
+        {
+            const menuOptions = window.KomputerNations.menuOptions;
+            const maxNationCount = thisGame.numberOfDistinctPlayers;
+            for (let color = 0; color < maxNationCount; color++)
+            {
+                const selector = document.getElementById("NationSelector_" + color);
+                const originColor = selector.value * 1;
+                const maskColor = window.KomputerNations[menuOptions[selector.selectedIndex]];
+                for (let i = 0; i < this.length; i++)
+                {
+                    let piece = this[i];
+                    for (let unit of piece.units)
+                    {
+                        if (unit.color === originColor)
+                        {
+                            unit.maskColor = maskColor;
+                        }
+                    }
+                }
+            }
+        }
+        for (let i = 0; i < this.length; i++)
+        {
+            let piece = this[i];
+            piece.updateUnitDisplay();
+        }
+    }
+    thisGame.pieces.updateUnitDisplays = GamesByEmail.Viktory2Pieces.prototype.updateUnitDisplays;
+}
+
+
 function patchPiecePrototype()
 {
+    // Patch for nation sprites: add color mask when adding new units.
+    GamesByEmail.Viktory2Piece.prototype.addUnit = function(color,type)
+    {
+       var unit=new GamesByEmail.Viktory2Unit(this,this.units.length,color,type);
+       unit.placedThisTurn=true;
+       this.units.push(unit);
+       unit.maskColor = getSelectedMaskColor(unit);
+       return unit;
+    }
+
+
+    // Patch to unload units with nation sprites.
+    GamesByEmail.Viktory2Piece.prototype.centerUnload = function(unitType,color,screenPoint)
+    {
+       for (var i=0;i<this.movingUnit.cargo.length;i++)
+          this.getElement("cargo_"+i).style.visibility="hidden";
+       var e=this.getElement();
+       var clipRect=this.pieces.game.board.unitRects[unitType+"F"].clone();
+       if (window.KomputerNations.isActive && (typeof(color) === "number") && color < 8)
+        {
+            const maskColor = getSelectedMask(color)
+            if (maskColor > 17)
+            {
+                clipRect.x = clipRect.x + 600;
+            } 
+            else if (maskColor > 8)
+            {
+                clipRect.x = clipRect.x + 300;
+            } 
+            color = maskColor;
+        }
+       if (color % 9 > 0)
+          clipRect.add(this.pieces.game.board.unitRects['co'].clone().scale(color % 9));
+       GamesByEmail.positionImage(e,screenPoint,clipRect);
+       e.style.visibility="visible";
+    }
+
+
+    // Patch for nation sprites: add color mask for conquered civ.
+    GamesByEmail.Viktory2Piece.prototype.conquer = function(color,update)
+    {
+       var won=false;
+       this.removeOpponentPennants(color);
+       var civ=this.findOpponentCivilization(color);
+       if (civ)
+       {
+          this.maybeStartDoomsdayClock(civ);
+          var cc=civ.color;
+          civ.color=color;
+          civ.isColorBlind=false;
+          civ.maskColor = getSelectedMaskColor(civ);
+          this.pieces.game.removeExcessPieces(cc,true);
+          this.pieces.game.maybeUndarkAdjacent(this.boardPoint,civ.isCity() ? 2 : 1);
+          if (this.pieces.getScore(cc)==0)
+          {
+             var team=this.pieces.game.teams.findTeamByColor(cc);
+             if (!team.status.resigned)
+                team.notify.lost=true;
+             team.status.inPlay=false;
+             won=this.pieces.game.checkForWin(true);
+          }
+          if (!won &&
+              this.pieces.game.playOptions.shorterConquest &&
+              this.hasCapital(cc))
+          {
+             this.pieces.game.setEconomicVictors(cc);
+             won=true;
+          }
+       }
+       for (var i=0;i<this.units.length;i++)
+          if (this.units[i].isBombarder())
+             this.units[i].hasBombarded=true;
+       if (update)
+          this.updateUnitDisplay();
+       return won;
+    }
+
+    // Adds a check for array before accessing. 
     GamesByEmail.Viktory2Piece.prototype.getRetreatables = function(color)
     {
         if (this.retreatIndices)
@@ -5687,9 +5959,162 @@ function showKomputerControls()
 }
 
 
-// Overwrites original codebase functions.
-function patchGamePrototype()
+function hidePrimaryControls()
 {
+    let runButton = document.getElementById("KomputerButton_" + GameVersion);
+    let stopButton = document.getElementById("StopKomputerButton_" + GameVersion);
+    let darkModeToggle = document.getElementById("DarkModeToggle_" + GameVersion);
+    let darkModeLabel = document.getElementById("DarkModeLabel_" + GameVersion);
+    let soundToggle = document.getElementById("SoundToggle_" + GameVersion);
+    let soundToggleLabel = document.getElementById("SoundToggleLabel_" + GameVersion);
+    let turboToggle = document.getElementById("TurboToggle_" + GameVersion);
+    let turboToggleLabel = document.getElementById("TurboToggleLabel_" + GameVersion);
+    runButton.style.visibility = "hidden"; 
+    stopButton.style.visibility = "hidden";
+    darkModeToggle.style.visibility = "hidden"; 
+    darkModeLabel.style.visibility = "hidden"; 
+    soundToggle.style.visibility = "hidden";
+    soundToggleLabel.style.visibility = "hidden";
+    turboToggle.style.visibility = "hidden";
+    turboToggleLabel.style.visibility = "hidden";
+}
+
+
+function patchGamePrototype(thisGame)
+{
+    // Starting a new game disables custom nations and game editor, updates their position.  
+    GamesByEmail.Viktory2Game.prototype.startAnotherGame = function()
+    {
+       disableGameEditor();
+       disableNations(this);
+       var formLoader=new Foundation.ClientLoader();
+       formLoader.readyToProcess=new Function(this.event("showStartAnotherGameForm(null)"));
+       formLoader.receiveScriptList([{test:"typeof(GamesByEmail.GameForm)=='undefined'",src:this.getCodeFolder()+"GamesByEmail.GameForm.js?"+(new Date()).valueOf()},
+                                     {test:"GamesByEmail.GameForm.$classFromNameHint('"+this.resource("gameFolder")+"')==null",src:this.getCodeFolder(true)+"GameForm.js?"+(new Date()).valueOf()}]);
+       this.requestNewGameUserInfo();
+       setTimeout(function()
+        {
+            let form = document.getElementById("MultiplayerForm");
+            let msgBox = document.getElementById("Foundation_Elemental_" + GameVersion + "_gameMessageWrite"); //document.getElementById("Foundation_Elemental_11_GameTitle");
+            form.style.position = "absolute";
+            form.style.top = msgBox.getBoundingClientRect().bottom + window.scrollY - 5;
+            selectDefaultPlayerCount(); 
+            hideDefaultPlayControls()
+            hidePrimaryControls();
+            hideGameEditor();
+            hideNationsDiv();
+        }, 1600);
+    }
+
+    // Adds support for nation sprites.
+    GamesByEmail.Viktory2Game.prototype.getUnitImageHtml = function(unitType,color,attributes)
+   {
+    var clipRect=this.board.unitRects[unitType].clone();
+    if (window.KomputerNations.isActive && (typeof(color) === "number") && color < 8)
+    {
+        const maskColor = getSelectedMask(color)
+        if (maskColor > 17)
+        {
+            clipRect.x = clipRect.x + 600;
+        } 
+        else if (maskColor > 8)
+        {
+            clipRect.x = clipRect.x + 300;
+        } 
+        color = maskColor;
+    }
+      if (color % 9 > 0)
+         clipRect.add(this.board.unitRects['co'].clone().scale(color % 9));
+      return GamesByEmail.clippedImageHtml(this.getUnitImageSrc(),clipRect,null,attributes ? attributes : null);
+   }
+
+   // Adds source for nation sprites.
+    GamesByEmail.Viktory2Game.prototype.getUnitImageSrc = function ()
+    {
+        if (window.KomputerNations.isActive)
+        {
+            return window.KomputerNations.path + "Units_16_nations.png";
+        }
+        else
+        {
+            return this.getImageSrc(this.board["unitImage"+this.altUnits]);
+        }
+    }
+
+
+    GamesByEmail.Viktory2Game.prototype.updateTeamTitles = function ()
+    {
+        if (window.KomputerNations.isActive)
+        {
+            renameTeams(this, true);
+        }
+        else
+        {
+            renameTeams(this, false);
+        }
+        this.setInnerHtml("topTeamTitles",this.getTeamTitlesHtml(true));
+        this.setInnerHtml("bottomTeamTitles",this.getTeamTitlesHtml(false));
+    }
+
+
+    thisGame.getUnitImageSrc = GamesByEmail.Viktory2Game.prototype.getUnitImageSrc;
+    thisGame.getUnitImageHtml = GamesByEmail.Viktory2Game.prototype.getUnitImageHtml;
+    thisGame.updateTeamTitles = GamesByEmail.Viktory2Game.prototype.updateTeamTitles;
+
+
+    GamesByEmail.Viktory2Game.prototype.reserveOnMouseDown = function (element,event,index)
+    {
+       if(event.preventDefault)
+          event.preventDefault();
+       this.maybeHideOverlay();
+       var controlsCapital=this.doesColorControlTheirCapital(this.player.team.color);
+       var unitType=this.player.team.reserveUnits.charAt(index);
+       var messageHtml=null;
+       this.movingReserveIndex=-2;
+       if (!(messageHtml=this.anyBattlesPending()))
+          if (controlsCapital || unitType=="i")
+             if (this.setTargetPoints(unitType=="t" ? this.getBuildables(this.player.team.color,this.player.team.rulerColor) : this.pieces.getReservables(this.player.team.color,this.player.team.rulerColor,unitType,controlsCapital)))
+             {
+                this.movingReserveIndex=index;
+                this.onMouseMove="placeReserveOnMouseMove";
+                this.onMouseUp="placeReserveOnMouseUp";
+                var e=this.getElement("mouse");
+                if (e.setCapture) 
+                  e.setCapture(true);
+                var screenPoint=GamesByEmail.Game.$mousePoint(event,e);
+                this.getElement("reserve_"+this.movingReserveIndex).style.visibility="hidden";
+                var movingPiece=this.pieces.getNewPiece();
+                movingPiece.setMovingUnit(new GamesByEmail.Viktory2Unit(null,-1,this.player.team.color,unitType));
+                movingPiece.movingUnit.maskColor = getSelectedMaskColor(movingPiece.movingUnit);
+                movingPiece.center(this.constrainPoint(screenPoint).subtract(0,5));
+                messageHtml="";
+                if (this.movePhase<11)
+                   messageHtml+=this.resource("thisWillEndMovementAndCombatPhaseHtml");
+                messageHtml+=this.reservePlacementHtml(unitType);
+                if (messageHtml.length==0)
+                   messageHtml=null;
+             }
+             else
+                if (unitType=="t")
+                   if (this.teams.length<=6 &&
+                       this.player.team.color==0 &&
+                       this.move.number<=3)
+                      messageHtml=this.resource("onlyOneTownForFirstTeamOnTwoPlayersHtml");
+                   else
+                      messageHtml=this.resource("noPlaceToBuildHtml");
+                else
+                   messageHtml=this.resource("noPlaceToPutReserveUnitHtml");
+          else
+             if (unitType=="t")
+                messageHtml=this.resource("youDoNotControlCapitalToBuildHtml");
+             else
+                messageHtml=this.resource("youDoNotControlCapitalToPlaceUnitsHtml");
+       if (messageHtml)
+          this.showReserveMessage(new Foundation.Point(this.board.image.size.x/2,this.board.image.size.y),messageHtml);
+    }
+
+
+    // Appends game update to ensure the End Turn message shows for all cases. 
     // Adds check for objects before accessing.
     GamesByEmail.Viktory2Game.prototype.redeployUnitsMouseUp = function(screenPoint)
     {
@@ -5731,9 +6156,7 @@ function patchGamePrototype()
            target.updateUnitDisplay();
            this.setTargetPoints(null);
            movingPiece.setMovingUnit(null);         
-           
            this.pushMove("Redeploy and Place Reserve",log,target);
-           this.update();
         }
         else
         {
@@ -5749,7 +6172,6 @@ function patchGamePrototype()
               movingPiece.setMovingUnit(null);
               let nltd=this.nothingLeftToDo();
               this.pushMove("Redeploy",log,oldPiece,"processMoveUnitMove",nltd,nltd ? "commitEndOfTurn" : null);
-              this.update();
            }
            else
            {
@@ -5760,6 +6182,7 @@ function patchGamePrototype()
               movingPiece.setMovingUnit(null);
            }
         }
+        this.update();
         return true;
     }
 
@@ -5789,7 +6212,7 @@ function patchGamePrototype()
         return this.targetPoints && this.targetPoints.length>0;
     }
 
-    // Adds button position reset on end turn.
+    // Adds button position resets on end turn, for slow and fast response.
     GamesByEmail.Viktory2Game.prototype.endMyTurn = function()
     {
         if (!this.battlesPendingAlert("EndTurn") &&
@@ -5798,6 +6221,7 @@ function patchGamePrototype()
             this.moveToNextPlayer();
             this.sendMove();
             setTimeout(function(){ resetButtonPositions() }, 100);
+            setTimeout(function(){ resetButtonPositions() }, 3000);
         }
         else
             this.getElement("endMyTurn").disabled=false;
@@ -5883,7 +6307,7 @@ function patchGamePrototype()
       var boardPoint=this.boardPointFromScreenPoint(screenPoint=this.constrainPoint(screenPoint));
       if (this.isTargetPoint(boardPoint))
       {
-         playSound("move_" + movingPiece.movingUnit.type);
+         playSound("move_" + getMovingUnitType(movingPiece.movingUnit));
          window.lastTargetPoint = boardPoint;
          var targetPiece=this.pieces.findAtPoint(boardPoint);
          if (movingPiece.movingUnit.isLandUnit() &&
@@ -5892,6 +6316,10 @@ function patchGamePrototype()
             var oldPiece=movingPiece.movingUnit.piece;
             var loadableUnit=this.militaryUnitFromScreenPoint(screenPoint,null,movingPiece.movingUnit.color,movingPiece.movingUnit.rulerColor,false,false,true);
             var log=this.logEntry(7,oldPiece.index,oldPiece.boardValue,targetPiece.index,targetPiece.boardValue,movingPiece.movingUnit.type,loadableUnit.type);
+            if (window.KomputerNations.isActive)
+            {
+                loadableUnit.maskColor = getSelectedMaskColor(loadableUnit);
+            }
             loadableUnit.loadCargo(movingPiece.movingUnit);
             movingPiece.setMovingUnit(null);
             oldPiece.updateUnitDisplay();
@@ -5964,14 +6392,6 @@ function patchGamePrototype()
       this.onMouseUp=null;
       if (this.isTargetPoint(boardPoint))
       {
-        if (movingUnit.isMilitary(movingUnit.color))
-        {
-            playSound("place_" + movingUnit.type);
-        }
-        else
-        {
-            playSound("buildCiv");
-        }
          if (this.movePhase<6)
             this.pieces.setAllMilitaryMoveComplete(movingUnit.color,true);
          let target=this.pieces.findAtPoint(boardPoint);
@@ -5997,6 +6417,18 @@ function patchGamePrototype()
             movingUnit.movementComplete=true;
             this.player.team.reserveUnits=this.player.team.reserveUnits.substr(0,this.movingReserveIndex)+this.player.team.reserveUnits.substr(this.movingReserveIndex+1);
          }
+         if (window.KomputerNations.isActive)
+         {
+            movingUnit.maskColor = getSelectedMaskColor(movingUnit);
+         }
+         if (movingUnit.isMilitary(movingUnit.color))
+        {
+            playSound("place_" + getMovingUnitType(movingUnit));
+        }
+        else
+        {
+            playSound("buildCiv");
+        }
          target.updateUnitDisplay();
          if (movingUnit.isFrigate())
          {
@@ -6085,7 +6517,14 @@ function patchGamePrototype()
             const anyColor = -1;
             if (piece.hasCavalry(anyColor))
             {
-                playSound("battleCavalry");
+                if (window.KomputerNations.isActive)
+                {
+                    playCavalryBattle(piece);
+                }
+                else
+                {
+                    playSound("battleCavalry");
+                }
             }
             if (piece.hasArtillery(anyColor) || piece.hasFrigate(anyColor))
             {
@@ -6106,7 +6545,14 @@ function patchGamePrototype()
         const anyColor = -1;
         if (piece.hasCavalry(anyColor))
         {
-            playSound("battleCavalry");
+            if (window.KomputerNations.isActive)
+            {
+                playCavalryBattle(piece);
+            }
+            else
+            {
+                playSound("battleCavalry");
+            }
         }
         if (piece.hasArtillery(anyColor) || piece.hasFrigate(anyColor))
         {
@@ -6124,7 +6570,14 @@ function patchGamePrototype()
         const anyColor = -1;
         if (piece.hasCavalry(anyColor))
         {
-            playSound("battleCavalry");
+            if (window.KomputerNations.isActive)
+            {
+                playCavalryBattle(piece);
+            }
+            else
+            {
+                playSound("battleCavalry");
+            }
         }
         if (piece.hasArtillery(anyColor) || piece.hasFrigate(anyColor))
         {
@@ -6237,7 +6690,7 @@ function styleGameMessageBox(thisGame)
 
 
 function addRunButton(text, onclick, pointerToGame) {
-    let style = {position: 'absolute', top: getRunButtonTop(), left:'24px', 'z-index': '9999', "-webkit-transition-duration": "0.6s", "transition-duration": "0.6s", overflow: 'hidden', width: '128px', 'font-size': '10px'}
+    let style = {position: 'absolute', top: getRunButtonTop(), left:'24px', 'z-index': '9999', "-webkit-transition-duration": "0.6s", "transition-duration": "0.6s", overflow: 'hidden', width: '102px', 'font-size': '10px'}
     let button = document.createElement('button'), btnStyle = button.style
     document.body.appendChild(button) // For now, this works well enough, but it'd be best to add into GBE system.
     button.setAttribute("class", "button_runKomputer");
@@ -6312,24 +6765,60 @@ function addDarkModeToggle()
 
 function getRunButtonTop()
 {
-    return (window.scrollY + document.getElementById('Foundation_Elemental_' + GameVersion + '_bottomTeamTitles').getBoundingClientRect().top + 'px');
+    const teamTitlesTop = window.scrollY + document.getElementById('Foundation_Elemental_' + GameVersion + '_bottomTeamTitles').getBoundingClientRect().top;
+    if (window.isExtraLargeBoard)
+    {
+        return teamTitlesTop - 60;
+    }
+    return teamTitlesTop;
 }
+
+
+function getSoundToggleTop()
+{
+    return getRunButtonTop();
+}
+
+
+function getSoundToggleLabelTop()
+{
+    return getRunButtonTop() + 4;
+}
+
 
 function getStopButtonTop()
 {
-    return (window.scrollY + document.getElementById('Foundation_Elemental_' + GameVersion + '_bottomTeamTitles').getBoundingClientRect().top + 20 + 'px');
+    return getRunButtonTop() + 20;
 }
 
 
 function getDarkModeToggleTop()
 {
-    return (window.scrollY + document.getElementById('Foundation_Elemental_' + GameVersion + '_bottomTeamTitles').getBoundingClientRect().top + 18 + 'px');
+    return getRunButtonTop() + 18;
 }
 
 
 function getDarkModeToggleLabelTop()
 {
-    return (window.scrollY + document.getElementById('Foundation_Elemental_' + GameVersion + '_bottomTeamTitles').getBoundingClientRect().top + 22 + 'px');
+    return getRunButtonTop() + 22;
+}
+
+
+function getTurboButtonTop()
+{
+    return getRunButtonTop() + 18;
+}
+
+
+function getTurboButtonLabelTop()
+{
+    return getRunButtonTop() + 22; //4;
+}
+
+
+function getTurboInfoTop()
+{
+    return getTurboButtonTop() - 36;
 }
 
 
@@ -6428,37 +6917,42 @@ function resetButtonPositions(visible = true)
     let darkModeLabel = document.getElementById("DarkModeLabel_" + GameVersion);
     let gameEditor = document.getElementById("GameEditor");
     let gameEditorToggle = document.getElementById("GameEditorToggle");
+    let nationsDiv = document.getElementById("NationsDiv");
     let multiplayerForm = document.getElementById("MultiplayerForm");
     let soundToggle = document.getElementById("SoundToggle_" + GameVersion);
     let soundToggleLabel = document.getElementById("SoundToggleLabel_" + GameVersion);
+    let turboToggle = document.getElementById("TurboToggle_" + GameVersion);
+    let turboToggleLabel = document.getElementById("TurboToggleLabel_" + GameVersion);
+    let turboToggleInfo = document.getElementById("TurboInfo_" + GameVersion);
     if (visible)
     {
         runButton.style.top = getRunButtonTop();
         stopButton.style.top = getStopButtonTop();
         darkModeToggle.style.top = getDarkModeToggleTop();
         darkModeLabel.style.top = getDarkModeToggleLabelTop();
-        soundToggle.style.top = getDarkModeToggleTop();
-        soundToggleLabel.style.top = getDarkModeToggleLabelTop();
+        soundToggle.style.top = getSoundToggleTop(); // getDarkModeToggleTop();
+        soundToggleLabel.style.top = getSoundToggleLabelTop();  //getDarkModeToggleLabelTop();
+        turboToggle.style.top = getTurboButtonTop();
+        turboToggleLabel.style.top = getTurboButtonLabelTop();
+        turboToggleInfo.style.top = getTurboInfoTop();
+        nationsDiv.style.top = getNationsDivTop();
+        nationsDiv.style.left = getNationsDivLeft();
         runButton.style.visibility = ""; 
         stopButton.style.visibility = "";
         darkModeToggle.style.visibility = ""; 
         darkModeLabel.style.visibility = ""; 
         soundToggle.style.visibility = "";
         soundToggleLabel.style.visibility = "";
+        turboToggle.style.visibility = "";
+        turboToggleLabel.style.visibility = "";
+        turboToggleInfo.style.visibility = "hidden";
+        nationsDiv.style.visibility = "";
         if (isOnPreviewTab())
         {
             if (gameEditor && gameEditorToggle)
             {
                 gameEditor.style.top = getGameEditorTop();
                 gameEditor.style.left = getGameEditorLeft();
-                gameEditorToggle.style.top = getGameEditorToggleTop();
-                gameEditorToggle.style.left = getGameEditorToggleLeft();
-                if (gameEditorToggle.labels.length)
-                {
-                    gameEditorToggle.labels[0].style.top = getGameEditorToggleLabelTop();
-                    gameEditorToggle.labels[0].style.left = getGameEditorToggleLabelLeft();
-                    gameEditorToggle.labels[0].style.visibility = ""
-                }
                 gameEditor.style.visibility = ""; 
                 gameEditorToggle.style.visibility = ""; 
             }
@@ -6480,10 +6974,10 @@ function resetButtonPositions(visible = true)
         {
             gameEditor.style.visibility = "hidden"; 
             gameEditorToggle.style.visibility = "hidden"; 
-            if (gameEditorToggle.labels.length)
-            {
-                gameEditorToggle.labels[0].style.visibility = "hidden";
-            }
+        }
+        if (nationsDiv)
+        {
+            nationsDiv.style.visibility = "hidden";
         }
         if (multiplayerForm)
         {
@@ -6491,6 +6985,9 @@ function resetButtonPositions(visible = true)
         }
         soundToggle.style.visibility = "hidden";
         soundToggleLabel.style.visibility = "hidden";
+        turboToggle.style.visibility = "hidden";
+        turboToggleLabel.style.visibility = "hidden";
+        turboToggleInfo.style.visibility = "hidden";
     }
 }
 
@@ -6932,7 +7429,7 @@ function addGameEditor(thisGame)
         gameEditorDiv.style.fontFamily = "Verdana";
         gameEditorDiv.style.padding = '4px';
         gameEditorDiv.innerText = "Game Editor";
-        document.body.appendChild(gameEditorDiv);
+        addGameEditorToggle(gameEditorDiv);
         window.isEditorInputSelected = {};
         const inputOptions = [
             {value: 'Plains'},
@@ -6952,8 +7449,7 @@ function addGameEditor(thisGame)
             const radioButtons = createRadioButton(option.value, editorInputListener);
             gameEditorDiv.appendChild(radioButtons);
         });
-        addGameEditorToggle();
-        //addHistoricOpponentToggle();
+        document.body.appendChild(gameEditorDiv);
     }
 }
 
@@ -7015,7 +7511,7 @@ function addColorLabel(container, value)
             window.cacheColor = nextColor;
             const fontColor = GamesByEmail.Viktory2Game.resourcePack.teamFontColors[nextColor];
             label.style.color = fontColor;
-            const colorText = GamesByEmail.Viktory2Game.resourcePack.teamTitles[nextColor];
+            const colorText = window.KomputerNations.isActive ? getSelectedDescription(nextColor) : GamesByEmail.Viktory2Game.resourcePack.teamTitles[nextColor];
             label.innerText = colorText;
         });
     colorLabel.addEventListener('mouseenter', (event) =>
@@ -7042,7 +7538,7 @@ function addUnitLabel(container, value)
     {
         return;
     }
-    window.editorUnitTypes = ["Infantry", "Cavalry", "Artillery", "Frigate"]
+    window.editorUnitTypes = ["Infantry", "Cavalry", "Artillery", "Frigate", "Clear"];
     window.editorTypeIndex = 0;
     window.editorUnitType = window.editorUnitTypes[window.editorTypeIndex];
     const unitLabel = document.createElement('label');
@@ -7129,7 +7625,7 @@ function getGameEditorTop()
 {
     const playerNotesOffset = 14;
     const playerNotesRect = document.getElementById('Foundation_Elemental_' + GameVersion + '_playerNotes').getBoundingClientRect();
-    return (window.scrollY + playerNotesRect.bottom + playerNotesOffset + 'px');
+    return (window.scrollY + playerNotesRect.bottom + playerNotesOffset );
 }
 
 
@@ -7137,94 +7633,38 @@ function getGameEditorLeft()
 {
     const playerNotesOffset = 200;
     const playerNotesRect = document.getElementById('Foundation_Elemental_' + GameVersion + '_playerNotes').getBoundingClientRect();
-    const playerNotesMidwayX = (playerNotesRect.left + playerNotesRect.right) * 0.3;
-    return (window.scrollX + playerNotesMidwayX + playerNotesOffset + 'px');
+    const playerNotesMidwayX = (playerNotesRect.left + playerNotesRect.right) * 0.32;
+    return (window.scrollX + playerNotesMidwayX + playerNotesOffset );
 }
 
 
-function addGameEditorToggle()
+function addGameEditorToggle(editorDiv)
 {
     let toggle = document.createElement("input");
     toggle.setAttribute("type", "checkbox");
     toggle.id = "GameEditorToggle";
     toggle.addEventListener('click', gameEditorToggleClick);
-	let style = {position: 'absolute', top: getGameEditorToggleTop(), left:getGameEditorToggleLeft(), 'z-index': '9999'};
+	let style = {position: 'relative', top: -18, left: 24, 'z-index': '9999', marginBottom: -8}; 
 	let toggleStyle = toggle.style;
 	Object.keys(style).forEach(key => toggleStyle[key] = style[key]);
-    document.body.appendChild(toggle);
-    // Toggle Label
-    let toggleLabel = document.createElement("label");
-    toggleLabel.htmlFor = "GameEditorToggle";
-    toggleLabel.innerText = "On";
-    style = {position: 'absolute', top: getGameEditorToggleLabelTop(), left: getGameEditorToggleLabelLeft(), 'z-index': '9999', 'font-size': '8px'};
-    Object.keys(style).forEach(key => toggleLabel.style[key] = style[key]);
-    document.body.appendChild(toggleLabel);
+    editorDiv.appendChild(toggle);
 }
 
 
-function getGameEditorToggleTop()
+function getNationsDivTop()
 {
-    const gameEditorTop = 12;
+    const playerNotesOffset = 14;
     const playerNotesRect = document.getElementById('Foundation_Elemental_' + GameVersion + '_playerNotes').getBoundingClientRect();
-    return (window.scrollY + playerNotesRect.bottom + gameEditorTop + 'px');
+    return (window.scrollY + playerNotesRect.bottom + playerNotesOffset );
 }
 
 
-function getGameEditorToggleLeft()
+function getNationsDivLeft()
 {
-    const gameEditorLeft = 272;
+    const playerNotesOffset = 316;
     const playerNotesRect = document.getElementById('Foundation_Elemental_' + GameVersion + '_playerNotes').getBoundingClientRect();
-    const playerNotesMidwayX = (playerNotesRect.left + playerNotesRect.right) * 0.3;
-    return (window.scrollX + playerNotesMidwayX + gameEditorLeft + 'px');
-}
-
-
-function getGameEditorToggleLabelTop()
-{
-    const gameEditorTop = 17;
-    const playerNotesRect = document.getElementById('Foundation_Elemental_' + GameVersion + '_playerNotes').getBoundingClientRect();
-    return (window.scrollY + playerNotesRect.bottom + gameEditorTop + 'px');
-}
-
-
-function getGameEditorToggleLabelLeft()
-{
-    const gameEditorLeft = 292;
-    const playerNotesRect = document.getElementById('Foundation_Elemental_' + GameVersion + '_playerNotes').getBoundingClientRect();
-    const playerNotesMidwayX = (playerNotesRect.left + playerNotesRect.right) * 0.3;
-    return (window.scrollX + playerNotesMidwayX + gameEditorLeft + 'px');
-}
-
-
-function getHistoricOpponentToggleTop()
-{
-    const offsetY = 16;
-    const gameEditorRect = document.getElementById("GameEditor").getBoundingClientRect();
-    return (window.scrollY + gameEditorRect.bottom + offsetY + 'px');
-}
-
-
-function getHistoricOpponentToggleLeft()
-{
-    const offsetX = 5;
-    const gameEditorRect = document.getElementById("GameEditor").getBoundingClientRect();
-    return (window.scrollX + gameEditorRect.left + offsetX + 'px');
-}
-
-
-function getHistoricOpponentToggleLabelTop()
-{
-    const offsetY = 16;
-    const gameEditorRect = document.getElementById("GameEditor").getBoundingClientRect();
-    return (window.scrollY + gameEditorRect.bottom + offsetY + 'px');
-}
-
-
-function getHistoricOpponentToggleLabelLeft()
-{
-    const offsetX = 22;
-    const gameEditorRect = document.getElementById("GameEditor").getBoundingClientRect();
-    return (window.scrollX + gameEditorRect.left + offsetX + 'px');
+    const playerNotesMidwayX = (playerNotesRect.left + playerNotesRect.right) * 0.32;
+    return (window.scrollX + playerNotesMidwayX + playerNotesOffset );
 }
 
 
@@ -7271,6 +7711,7 @@ function gameEditorToggleClick(event, toggle)
         thisGame.update();
         removeExcessUnits(thisGame);
     }
+    setTimeout(resetButtonPositions, 100);
 }
 
 
@@ -7372,6 +7813,8 @@ function getEditorUnitType()
             return "a";
         case "Frigate":
             return "f";
+        case "Clear":
+            return window.editorUnitType;
         default:
             console.log("Game Editor got unknown unit type: " + window.editorUnitType);
             return "i";
@@ -7420,7 +7863,7 @@ function gameEditorMouseDown(event, draggingMouse = false)
     const boardPoint = thisGame.boardPointFromScreenPoint(screenPoint);   
     const piece = thisGame.pieces.findAtPoint(boardPoint);
     const reserveIndex = thisGame.pieces.length - 1;
-    const isValidHex = (piece && (piece.index !== reserveIndex) && !piece.isPerimeter());
+    const isValidHex = (piece && (piece.index !== reserveIndex));
     if (!isValidHex)
     {
         return;
@@ -7451,20 +7894,36 @@ function gameEditorMouseDown(event, draggingMouse = false)
         let output = inputValues[key];
         if (output.type === "terrain")
         {
+            if (piece.isPerimeter())
+            {
+                return;
+            }
             drawTerrain(thisGame, piece, output.data);
         }
         else if (output.type === "capital")
         {
+            if (piece.isPerimeter())
+            {
+                return;
+            }
             drawCapital(thisGame, piece);
         }
         else if (output.type === "build")
         {
+            if (piece.isPerimeter())
+            {
+                return;
+            }
             output.data = getNextBuild(piece);
             drawBuild(thisGame, piece, output.data);
         }
         else if (output.type === "military")
         {
             output.data = getEditorUnitType();
+            if (piece.isPerimeter() && output.data !== 'f')
+            {
+                return;
+            }
             drawMilitary(thisGame, piece, output.data, draggingMouse);
         }
         else if (output.type === "color")
@@ -7522,12 +7981,12 @@ function getResetUnits(thisGame)
 
 function drawTerrain(thisGame, piece, output)
 {
+    const anyColor = -1;
     if (piece.boardValue !== output)
     {
         const newLand = "l"
         piece.boardValue = newLand;
         piece.setValue(output, false);
-        const anyColor = -1;
         if (piece.hasCivilization(anyColor))
         {
             thisGame.update();
@@ -7536,6 +7995,29 @@ function drawTerrain(thisGame, piece, output)
         }
     }
     reveal(thisGame, piece);
+    if (piece.isWater())
+    {
+        while (piece.hasInfantry(anyColor) || piece.hasCavalry(anyColor) || piece.hasArtillery(anyColor))
+        {
+            drawMilitary(thisGame, piece, "Clear", false);
+        }
+        if (piece.hasCivilization(anyColor))
+        {
+            const clear = 0;
+            drawBuild(thisGame, piece, clear);
+        }
+        if (piece.hasCapital(anyColor))
+        {
+            drawCapital(thisGame, piece);
+        }
+    }
+    if (piece.isLand())
+    {
+        while (piece.hasFrigate(anyColor))
+        {
+            drawMilitary(thisGame, piece, "Clear", false);
+        }
+    }
 }
 
 
@@ -7554,6 +8036,14 @@ function drawCapital(thisGame, piece)
         }
     }
     const anyColor = -1;
+    if (piece.isWater())
+    {
+        while (piece.hasFrigate(anyColor))
+        {
+            drawMilitary(thisGame, piece, "Clear", false);
+        }
+        drawTerrain(thisGame, piece, "p");
+    }
     let civ = piece.findCivilization(anyColor)
     if (civ)
     {
@@ -7599,6 +8089,14 @@ function drawBuild(thisGame, piece, output)
 {
     const anyColor = -1;
     const clear = 0;
+    if (piece.isWater() && output !== clear)
+    {
+        while (piece.hasFrigate(anyColor))
+        {
+            drawMilitary(thisGame, piece, "Clear", false);
+        }
+        drawTerrain(thisGame, piece, "p");
+    }
     const addTown = 1;
     const addCity = 2;
     let indeciesToReveal = null;
@@ -7643,9 +8141,10 @@ function convertEnemies(piece, color)
 {
     for (let unit of piece.units)
     {
-        if ((unit.isMilitary() || unit.isCivilization()) && unit.color !== color)
+        unit.color = color;
+        if (window.KomputerNations.isActive)
         {
-            unit.color = color;
+            unit.maskColor = getSelectedMask(color);
         }
     }
 }
@@ -7685,6 +8184,24 @@ function drawVisibility(thisGame, piece, output)
 
 function drawMilitary(thisGame, piece, type, draggingMouse)
 {
+    const anyColor = -1;
+    if (type === "f" && !piece.isWater())
+    {
+        while (piece.hasInfantry(anyColor) || piece.hasCavalry(anyColor) || piece.hasArtillery(anyColor))
+        {
+            drawMilitary(thisGame, piece, "Clear", false);
+        }
+        drawTerrain(thisGame, piece, "w");
+    }
+    const drawingLandUnit = (type === "i") || (type === "c") || (type === "a");
+    if (piece.isWater() && drawingLandUnit)
+    {
+        while (piece.hasFrigate(anyColor))
+        {
+            drawMilitary(thisGame, piece, "Clear", false);
+        }
+        drawTerrain(thisGame, piece, "p");
+    }
     const color = window.cacheColor;
     const aboveBoardText = thisGame.getElement("aboveBoard");
     const hasWarning = aboveBoardText ? aboveBoardText.innerText.substr(0, 'Warning'.length) === 'Warning' : false;
@@ -7700,9 +8217,28 @@ function drawMilitary(thisGame, piece, type, draggingMouse)
         thisGame.setAboveBoardHtml('', 999);
         return;
     } 
+    if (type === "Clear")
+    {
+        let update = false;
+        for (let unit of piece.units)
+        {
+            if (unit.isMilitary())
+            {
+                piece.removeUnit(unit, true);
+                update = true;
+            }
+        }
+        if (update)
+        {
+            piece.updateUnitDisplay();
+            thisGame.update();
+            styleGameEditor(thisGame);
+        }
+        return;
+    }
     if (draggingMouse)
     {
-        lastPiece = thisGame.pieces[window.lastEditIndex];
+        let lastPiece = thisGame.pieces[window.lastEditIndex];
         if (removeExcessUnit(lastPiece, color, type))
         {
             drawUnit(thisGame, piece, color, type);
@@ -7724,6 +8260,8 @@ function drawMilitary(thisGame, piece, type, draggingMouse)
         reserveArray.splice(typeIndex, 1);
         thisGame.player.team.reserveUnits = reserveArray.join("");
         drawUnit(thisGame, piece, color, type);
+        thisGame.update();
+        styleGameEditor(thisGame);
         return;
     }
     drawUnit(thisGame, piece, color, type);
@@ -7844,6 +8382,7 @@ function drawColor(thisGame, piece, output)
         if (unit.color !== output && !unit.isCapital())
         {
             unit.color = output;
+            unit.maskColor = getSelectedMaskColor(unit);
             update = true;
         }
     }
@@ -7875,7 +8414,18 @@ function drawReset(thisGame, piece, output)
     piece.removeAllUnits(false);
     for (let unit of window.resetUnits[piece.index])
     {
+        if (unit.isCapital())
+        {
+            const oldCapitalPiece = thisGame.pieces.findCapitalPiece(unit.color);
+            if (oldCapitalPiece)
+            {
+                const oldCapitalUnit = oldCapitalPiece.findCapital(unit.color);
+                oldCapitalPiece.removeUnit(oldCapitalUnit);
+                oldCapitalPiece.updateUnitDisplay();
+            }
+        }
         piece.units.push(unit);
+        unit.piece = piece;
     }
     thisGame.update();
     styleGameEditor(thisGame);
@@ -7902,38 +8452,6 @@ function maybeSelectDefaultInput()
 }
 
 
-function addHistoricOpponentToggle()
-{
-    // Toggle
-    let toggle = document.createElement("input");
-    toggle.setAttribute("type", "checkbox");
-    toggle.id = "HistoricalOpponentToggle";
-    let style = {position: 'absolute', top: getHistoricOpponentToggleTop(), left:getHistoricOpponentToggleLeft(), 'z-index': '9999'};
-    let toggleStyle = toggle.style;
-    Object.keys(style).forEach(key => toggleStyle[key] = style[key]);
-    toggle.addEventListener('click', historicOpponentToggleClick);
-    document.body.appendChild(toggle);
-    // Label
-    let toggleLabel = document.createElement("label");
-    toggleLabel.htmlFor = "HistoricalOpponentToggle";
-    toggleLabel.innerText = "Random Historic Nations";
-    style = {position: 'absolute', top: getHistoricOpponentToggleLabelTop(), left: getHistoricOpponentToggleLabelLeft(), 'z-index': '9999', 'font-size': '10px', 'font-family': 'Veranda', 'padding': '4px'};
-    Object.keys(style).forEach(key => toggleLabel.style[key] = style[key]);
-    document.body.appendChild(toggleLabel);
-}
-
-
-function historicOpponentToggleClick()
-{
-    const defaultNames = ["Red","Yellow","Green","Cyan","Blue","Magenta","Orange","Brown"];
-    const historicNames = ['British', 'Dutch', 'French', 'Portugese', 'Prussians', 'Russians', 'Spanish', 'Ottomans', 'Persians', 'Mughals', 'Qing', 'Siamese', 'Ashanti', 'Zulu', 'Americans', 'Comanche'];
- 
-
-
-}
-
-
-
 function gameEditorMouseMove(event)
 {
     if (window.isMouseDown)
@@ -7954,10 +8472,14 @@ function gameEditorMouseUp()
 function disableGameEditor()
 {
     const toggle = document.getElementById("GameEditorToggle");
-    if (toggle && toggle.checked)
+    if (!toggle)
+    {
+        return;
+    }
+    if (toggle.checked)
     {
         toggle.checked = false;
-        historicOpponentToggleClick(null, toggle);
+        gameEditorToggleClick(null, toggle);
     }
 }
 
@@ -7979,9 +8501,20 @@ function enableGameEditor()
     if (toggle && !toggle.checked)
     {
         toggle.checked = true;
-        historicOpponentToggleClick(null, toggle);
+        gameEditorToggleClick(null, toggle);
     }
 }
+
+
+function hideGameEditor()
+{
+    let gameEditor = document.getElementById("GameEditor");
+    if (gameEditor)
+    {
+        gameEditor.style.visibility = 'hidden';
+    }
+}
+
 
 /// === Local Multiplayer ===
 
@@ -8060,23 +8593,22 @@ function getMultiplayerFormTop()
 {
     const playerNotesOffset = 14;
     const playerNotesRect = document.getElementById('Foundation_Elemental_' + GameVersion + '_playerNotes').getBoundingClientRect();
-    return (window.scrollY + playerNotesRect.bottom + playerNotesOffset + 'px');
+    return (window.scrollY + playerNotesRect.bottom + playerNotesOffset );
 }
 
 
 function getMultiplayerFormLeft()
 {
-    const playerNotesOffset = 174;
+    const playerNotesOffset = 192 + 256;
     const playerNotesRect = document.getElementById('Foundation_Elemental_' + GameVersion + '_playerNotes').getBoundingClientRect();
-    const playerNotesMidwayX = (playerNotesRect.left + playerNotesRect.right) * 0.4;
-    return (window.scrollX + playerNotesMidwayX + playerNotesOffset + 'px');
+    const playerNotesMidwayX = (playerNotesRect.left + playerNotesRect.right) * 0.32;
+    return (window.scrollX + playerNotesMidwayX + playerNotesOffset );
 }
 
 
 function multiplayerRestartButtonMouseClick(thisGame)
 {
     stopAndReset();
-    disableGameEditor();
     expandMultiplayerForm();
     patchPerspective(thisGame); 
     const formIndex = Foundation.$registry.length - 1;
@@ -8096,6 +8628,9 @@ function multiplayerRestartButtonMouseClick(thisGame)
         }
         hideMultiplayerForm();
         Foundation.$registry[formIndex].play();
+        setTimeout(function(){ 
+            resetButtonPositions(); 
+        }, 2000 );
     }
     else if (startAnotherButton)
     {
@@ -8130,11 +8665,6 @@ function multiplayerRestartButtonMouseClick(thisGame)
             thisGame.startAnotherGame();
         }    
     }
-    setTimeout(function(){ 
-        hideDefaultPlayControls()
-        selectDefaultPlayerCount(); 
-        resetButtonPositions();
-    }, 1200);
 }
 
 
@@ -8237,7 +8767,418 @@ function addMultiplayerRestartButton(thisGame, form)
 }
 
 
-// Napoleonic Sound Effects 
+/// Napoleonic Nations
+
+function addNations(thisGame, enableMenu = false)
+{
+    if (!window.KomputerNations)
+    {
+        window.KomputerNations = {
+            isActive: false,
+            path: window.KomputerImagePath,
+            Siamese: 9,
+            Portuguese: 10,
+            Ethiopian: 11,
+            French: 12,
+            Prussian: 13,
+            Persian: 14,
+            Dutch: 15,
+            American: 16,
+            British: 18,
+            Ashanti: 19,
+            Russian: 20,
+            Qing: 21,
+            Spanish: 22, 
+            Mughal: 23,
+            Austrian: 24,
+            Ottoman: 25,
+            menuOptions: [
+                "Portuguese",
+                "Spanish",
+                "British",
+                "French",
+                "Dutch",
+                "Prussian",
+                "Austrian",
+                "Russian",
+                "Ottoman",
+                "Persian",
+                "Mughal",
+                "Qing",
+                "Siamese",
+                "Ethiopian",
+                "Ashanti",
+                "American",
+            ],
+            menuPluralAddSuffix: 
+            {
+                Portuguese: false,
+                Spanish: false,
+                British: false,
+                French: false,
+                Dutch: false,
+                Prussian: true,
+                Austrian: true,
+                Russian: true,
+                Ottoman: true,
+                Persian: true,
+                Mughal: false,
+                Qing: false,
+                Siamese: false,
+                Ethiopian: true,
+                Ashanti: false,
+                American: true
+            } 
+        }
+    }
+    let nationsDiv = document.getElementById("NationsDiv");
+    if (!nationsDiv)
+    {
+        nationsDiv = document.createElement('div');
+        nationsDiv.id = "NationsDiv";
+        nationsDiv.style.display = 'flex';
+        nationsDiv.style.flexDirection = 'column';
+        nationsDiv.style.position = "absolute";
+        nationsDiv.style.top = getNationsDivTop();
+        nationsDiv.style.left = getNationsDivLeft();
+        nationsDiv.style.fontSize = "10px";
+        nationsDiv.style.fontFamily = "Verdana";
+        nationsDiv.style.padding = '4px';
+    }
+    nationsDiv.innerText = "Historic Nations";
+    addNationsToggle(thisGame, nationsDiv);
+    addNationsMenu(thisGame, nationsDiv);
+    document.body.appendChild(nationsDiv);
+    if (enableMenu)
+    {
+        enableNations(thisGame);
+    }
+}
+
+
+function addNationsToggle(thisGame, nationsDiv)
+{
+    let toggle = document.createElement("input");
+    toggle.setAttribute("type", "checkbox");
+    toggle.id = "NationsToggle";
+    toggle.addEventListener('click', function(event){ nationsToggleClick(thisGame, event) });
+	let style = {position: 'relative', top: -18, left: 48, 'z-index': '9999', marginBottom: -8}; 
+	let toggleStyle = toggle.style;
+	Object.keys(style).forEach(key => toggleStyle[key] = style[key]);
+    nationsDiv.appendChild(toggle);
+}
+
+
+function enableNations(thisGame)
+{
+    let nationsToggle = document.getElementById("NationsToggle");
+    if (nationsToggle)
+    {
+        nationsToggle.checked = true;
+        nationsToggleClick(thisGame, {srcElement: nationsToggle});
+    }
+}
+
+
+function hideNationsDiv()
+{
+    let nationsDiv = document.getElementById("NationsDiv");
+    if (nationsDiv)
+    {
+        nationsDiv.style.visibility = 'hidden';
+    }
+}
+
+
+function disableNations(thisGame)
+{
+    if (!thisGame)
+    {
+        thisGame = findGameForActiveTab();
+    }
+    let nationsToggle = document.getElementById("NationsToggle");
+    if (nationsToggle)
+    {
+        nationsToggle.checked = false;
+        nationsToggleClick(thisGame, {srcElement: nationsToggle});
+    }
+}
+
+
+function nationsToggleClick(thisGame, event)
+{
+    window.KomputerNations.isActive = event.srcElement.checked;
+    if (window.KomputerNations.isActive)
+    {
+        fixNationsMenu(thisGame);
+    }
+    thisGame.pieces.updateUnitDisplays();
+    thisGame.updateTeamTitles();
+    komputerLog("NationsToggle: " + event.srcElement.checked);  
+    resetButtonPositions();
+}
+
+
+function renameTeams(thisGame, useNations)
+{
+    for (let playerColor = 0; playerColor < thisGame.numberOfDistinctPlayers; playerColor++)
+    {
+        if (useNations)
+        {
+            thisGame.teams[playerColor].players[0].title = getTeamNoun(getSelectedDescription(playerColor));
+        }
+        else
+        {   
+            thisGame.teams[playerColor].players[0].title = "Player " + (playerColor + 1);
+        }
+    } 
+}
+
+
+function getSelectedDescription(color) 
+{
+    const nationSelector = document.getElementById("NationSelector_" + color);
+    if (!nationSelector)
+    {
+        return null;
+    }
+    const menuOptions = window.KomputerNations.menuOptions;
+    return menuOptions[nationSelector.selectedIndex];
+}
+
+
+function getTeamNoun(adjective)
+{
+    switch(adjective)
+    {
+        case "Portuguese": 
+        {
+            return "Portugal"
+        }
+        case "Spanish": 
+        {
+            return "Spain"
+        }
+        case "British": 
+        {
+            return "Britain"
+        }
+        case "French": 
+        {
+            return "France"
+        }
+        case "Dutch": 
+        {
+            return "The Netherlands"
+        }
+        case "Prussian": 
+        {
+            return "Prussia"
+        }
+        case "Austrian": 
+        {
+            return "Austria"
+        }
+        case "Russian": 
+        {
+            return "Russia"
+        }
+        case "Ottoman": 
+        {
+            return "Ottoman"
+        }
+        case "Persian": 
+        {
+            return "Persia"
+        }
+        case "Mughal": 
+        {
+            return "Mughal"
+        }
+        case "Qing": 
+        {
+            return "Qing"
+        }
+        case "Siamese": 
+        {        
+            return "Siam"
+        }
+        case "Ethiopian": 
+        {
+            return "Ethiopia"
+        }
+        case "Ashanti": 
+        {
+            return "Ashanti"
+        }
+        case "American": 
+        {
+            return "USA"
+        }
+    }
+}
+
+
+function addNationsMenu(thisGame, parent)
+{
+    const nations = window.KomputerNations.menuOptions;
+    const maxNationCount = thisGame.numberOfDistinctPlayers;
+    for (let color = 0; color < maxNationCount; color++)
+    {
+        let colorLabel = document.createElement("label")
+        colorLabel.style.fontFamily = "Verdana";
+        colorLabel.style.fontSize = "10px";
+        colorLabel.style.margin = "2px";
+        colorLabel.innerText = GamesByEmail.Viktory2Game.resourcePack.teamTitles[color];  
+        parent.append(colorLabel);
+        let nationSelector = document.createElement("select");
+        for (const nation of nations)
+        {
+            let option = document.createElement("option");  
+            option.value = color;
+            option.innerText = nation;
+            setDefaultNation(option, color, nation);
+            nationSelector.appendChild(option);
+        }
+        nationSelector.style.fontFamily = "Verdana";
+        nationSelector.style.fontSize = "10px";
+        nationSelector.style.margin = "1px";
+        nationSelector.id = "NationSelector_" + color;
+        nationSelector.addEventListener('change', function(event){ pickNation(thisGame, event, nations) });
+        parent.append(nationSelector);
+    }
+}
+
+
+function fixNationsMenu(thisGame)
+{
+    let selectorCount = 0;
+    const targetSelectorCount = thisGame.numberOfDistinctPlayers;
+    const maxCount = GamesByEmail.Viktory2Game.resourcePack.teamTitles.length;
+    for (let i = 0; i < maxCount; i++)
+    {
+        if (document.getElementById("NationSelector_" + i))
+        {
+            selectorCount++;
+            continue;
+        }
+        break;
+    }
+    if (selectorCount === targetSelectorCount)
+    {
+        return;
+    }
+    let nationsDiv = document.getElementById("NationsDiv");
+    while (nationsDiv.firstChild) 
+    {
+        nationsDiv.removeChild(nationsDiv.firstChild);
+    }
+    const enableMenu = true;
+    addNations(thisGame, enableMenu);
+}
+
+
+function pickNation(thisGame, event, nations)
+{
+    const originColor = event.target.value * 1;
+    const maskColor = window.KomputerNations[nations[event.target.selectedIndex]];
+    for (let piece of thisGame.pieces)
+    {
+        for (let unit of piece.units)
+        {
+            if (unit.color === originColor)
+            {
+                unit.maskColor = maskColor;
+            }
+        }
+        piece.updateUnitDisplay();
+    }
+    thisGame.updateTeamTitles();
+    komputerLog("Clicked selector # " + event.target.value);
+    komputerLog("Selected: " + nations[event.target.selectedIndex]);
+}
+
+
+function getSelectedMask(color)
+{
+    if (!window.KomputerNations.isActive)
+    {
+        return color;
+    }
+    const nationSelector = document.getElementById("NationSelector_" + color);
+    const menuOptions = window.KomputerNations.menuOptions;
+    return window.KomputerNations[menuOptions[nationSelector.selectedIndex]];    
+}
+
+
+function getSelectedMaskColor(unit)
+{
+    if (!window.KomputerNations.isActive)
+    {
+        return unit.color;
+    }
+    const nationSelector = document.getElementById("NationSelector_" + unit.color);
+    const menuOptions = window.KomputerNations.menuOptions;
+    return window.KomputerNations[menuOptions[nationSelector.selectedIndex]];
+}
+
+
+function setDefaultNation(option, color, nation)
+{
+    if (
+        (color === 0 && nation === "British") ||
+        (color === 1 && nation === "Austrian") ||
+        (color === 2 && nation === "Mughal") ||
+        (color === 3 && nation === "French") ||
+        (color === 4 && nation === "Russian") ||
+        (color === 5 && nation === "Ottoman") ||
+        (color === 6 && nation === "Spanish") ||
+        (color === 7 && nation === "Qing")
+    )
+    {
+        option.selected = true;
+    }
+}
+
+
+function swapColorForMask(unit)
+{
+    if (!window.KomputerNations.isActive)
+    {
+        return;
+    }
+    if (unit.maskColor === "undefined")
+    {
+        unit.maskColor = getSelectedMaskColor(unit);
+    }
+    if (unit.maskColor !== unit.color)
+    {
+        unit.colorStash = unit.color;
+        unit.color = unit.maskColor;
+    }
+}
+
+
+function revertColorFromMask(unit)
+{
+    if (!window.KomputerNations.isActive)
+    {
+        return;
+    }
+    if (unit.colorStash !== unit.color)
+    {
+        unit.color = unit.colorStash;
+    }
+}
+
+
+function nationHasElephants(maskColor)
+{
+    return (maskColor === window.KomputerNations.Siamese) || (maskColor === window.KomputerNations.Mughal);
+}
+
+
+/// Napoleonic Sound Effects 
 
 
 function addSound()
@@ -8263,7 +9204,7 @@ function addSoundToggle()
         resetButtonPositions();
         toggleSound(this.checked);
     });  
-	let style = {position: 'absolute', top: getDarkModeToggleTop(), left:'124px', 'z-index': '9999'};
+	let style = {position: 'absolute', top: getSoundToggleTop(), left:'126px', 'z-index': '9999'};
 	let toggleStyle = toggle.style;
 	Object.keys(style).forEach(key => toggleStyle[key] = style[key]);
     document.body.appendChild(toggle);
@@ -8272,7 +9213,7 @@ function addSoundToggle()
     toggleLabel.id = "SoundToggleLabel_" + GameVersion;
     toggleLabel.htmlFor = "SoundToggle_" + GameVersion
     toggleLabel.innerText = "Sound";  
-    style = {position: 'absolute', top: getDarkModeToggleLabelTop(), left:'143px', 'z-index': '9999', 'font-size': '8px'};
+    style = {position: 'absolute', top: getSoundToggleLabelTop(), left:'145px', 'z-index': '9999', 'font-size': '8px'};
     Object.keys(style).forEach(key => toggleLabel.style[key] = style[key]);
     document.body.appendChild(toggleLabel);
 }
@@ -8308,7 +9249,7 @@ function loadSounds(forceReload = false, playAmbient = true)
         {
             stopAllSound();
         }
-        let eventTypes = ["ambient", "battleArtillery", "battleCavalry", "battleCiv", "battlePending", "battleRoll", "battleRollShort", "bombard_f", "bombard_a", "buildCiv", "customizeMap", "move_i", "move_c", "move_a", "move_f", "place_i", "place_c", "place_a", "place_f", "lose", "win", "newGame"];
+        let eventTypes = ["ambient", "battleArtillery", "battleCavalry", "battleCiv", "battleElephant", "battlePending", "battleRoll", "battleRollShort", "bombard_f", "bombard_a", "buildCiv", "customizeMap", "move_i", "move_c", "move_e", "move_a", "move_f", "place_i", "place_c", "place_e",  "place_a", "place_f", "lose", "win", "newGame"];
         for (const type of eventTypes)
         {
             KomputerSound.playList.set(type, {audioHandles: getAudioHandles(type), playIndex: 0, noOverlap : cannotOverlap(type)});
@@ -8340,6 +9281,10 @@ function getAudioHandles(type)
         case "battleCiv" : 
         {
             return getBattleCivAudio(); 
+        }
+        case "battleElephant" : 
+        {
+            return getBattleElephantAudio();
         }
         case "battlePending" : 
         {
@@ -8379,6 +9324,11 @@ function getAudioHandles(type)
             const numFiles = 3;
             return getPlaceReserveAudio(type, numFiles); 
         }
+        case "place_e" :
+        {
+            const numFiles = 3;
+            return getPlaceReserveAudio(type, numFiles);
+        }
         case "place_a" : 
         {
             const numFiles = 3;
@@ -8396,6 +9346,10 @@ function getAudioHandles(type)
         case "move_c" : 
         {
             return getMoveCavalryAudio(); 
+        }
+        case "move_e" :
+        {
+            return getMoveElephantAudio();
         }
         case "move_a" : 
         {
@@ -8537,6 +9491,19 @@ function getBattleCivAudio()
 }
 
 
+function getBattleElephantAudio()
+{
+    const numAudio = 2;
+    const prefix = "battleElephant";
+    let audioHandles = [];
+    for (let trackNumber = 1; trackNumber <= numAudio; trackNumber++)
+    {
+        audioHandles.push(new Audio(KomputerSound.path + prefix + trackNumber + ".wav"))
+    }
+    return audioHandles; 
+}
+
+
 function getBattlePendingAudio()
 {
     const numAudio = 2;
@@ -8646,6 +9613,93 @@ function getMoveCavalryAudio()
 }
 
 
+function getMoveElephantAudio()
+{
+    const numAudio = 2;
+    const prefix = "stomp";
+    let audioHandles = [];
+    for (let trackNumber = 1; trackNumber <= numAudio; trackNumber++)
+    {
+        audioHandles.push(new Audio(KomputerSound.path + prefix + trackNumber + ".ogg"))
+    }
+    return audioHandles;
+}
+
+
+function playCavalryBattle(piece)
+{
+    let hasElephant = false;
+    const cavalry = findAllCavalry(piece);
+    for (const unit of cavalry)
+    {
+        if (unit.maskColor && nationHasElephants(unit.maskColor))
+        {
+            hasElephant = true;
+            break;
+        }
+    }
+    if (hasElephant)
+    {
+        playSound("battleElephant");
+    }
+    else
+    {
+        playSound("battleCavalry");
+    }
+}
+
+
+function playMoveSound(unit)
+{
+    if (!unit.isCavalry())
+    {
+        playSound("move_" + unit.type);
+        return;
+    }
+    let isElephant = false;
+    if (window.KomputerNations.isActive)
+    {
+        if (unit.maskColor && nationHasElephants(unit.maskColor))
+        {
+            isElephant = true;
+        }
+    }
+    if (isElephant)
+    {
+        playSound("move_e");
+    }
+    else
+    {
+        playSound("move_c");
+    }
+}
+
+
+function getMovingUnitType(unit)
+{
+    if (!unit.isCavalry())
+    {
+        return unit.type;
+    }
+    let isElephant = false;
+    if (window.KomputerNations.isActive)
+    {
+        if (unit.maskColor && nationHasElephants(unit.maskColor))
+        {
+            isElephant = true;
+        }
+    }
+    if (isElephant)
+    {
+        return "e";
+    }
+    else
+    {
+        return "c";
+    }
+}
+
+
 function getMoveArtilleryAudio()
 {
     const numAudio = 2;
@@ -8724,4 +9778,116 @@ function stopAllSound()
             }
         }
     }
+}
+
+// Turbo Toggle
+
+function addTurboToggle()
+{
+    let toggle = document.createElement("input");
+    toggle.setAttribute("type", "checkbox");
+    toggle.id = "TurboToggle_" + GameVersion;
+	let style = { position: 'absolute', top: getTurboButtonTop(), left: '126px', 'z-index': '9999' };  
+	let toggleStyle = toggle.style;
+	Object.keys(style).forEach(key => toggleStyle[key] = style[key]);
+    toggle.addEventListener('click', function()
+    {
+        window.KomputerTurbo = this.checked;
+        resetButtonPositions();
+        komputerLog("Turbo Toggle: " + this.checked); 
+    });  
+    document.body.appendChild(toggle);
+    document.body.appendChild(createTurboLabel(toggle));
+    document.body.appendChild(createTurboInfo(toggle));
+    addPopupListeners(toggle);
+}
+
+
+function createTurboLabel(toggle)
+{
+    let toggleLabel = document.createElement("label");
+    toggleLabel.htmlFor = toggle.id;
+    toggleLabel.id = "TurboToggleLabel_" + GameVersion;
+    toggleLabel.innerText = "Turbo";  
+    let style = { position: 'absolute', top: getTurboButtonLabelTop(), left:'145px', 'z-index': '9999', 'font-size': '8px' };
+    Object.keys(style).forEach(key => toggleLabel.style[key] = style[key]);
+    return toggleLabel;
+}
+
+
+function createTurboInfo(toggle)
+{
+    let toggleInfo = document.createElement("label");
+    toggleInfo.htmlFor = toggle.id;
+    toggleInfo.id = "TurboInfo_" + GameVersion;
+    toggleInfo.innerText = "2x speed & skip some transit moves.";
+    let style = { position: 'absolute', top: getTurboInfoTop(), left: '145px', fontSize: 8, zIndex: 9999, 
+        visibility: 'hidden', backgroundColor: 'darkgreen', color: '#e3e3e3', borderRadius: '6px', padding: '4px'
+    }
+    Object.keys(style).forEach(key => toggleInfo.style[key] = style[key]);
+    return toggleInfo;
+}
+
+
+function addPopupListeners(toggle)
+{
+    toggle.addEventListener('mouseover', function (event)
+    {
+        const popupInfo = event.target.labels[1];
+        if (popupInfo)
+        {
+            popupInfo.style.visibility = '';
+            if (!window.clearingPopup)
+            {
+                window.clearingPopup = true;
+                setTimeout(function (){ 
+                    popupInfo.style.visibility = 'hidden';
+                    window.clearingPopup = false; 
+                }, 3600);
+            }
+        }
+    });
+    toggle.addEventListener('mouseout', function (event)
+    {
+        const popupInfo = event.target.labels[1];
+        if (popupInfo)
+        {
+            popupInfo.style.visibility = 'hidden';
+        }
+    });
+    const toggleLabel = toggle.labels[0];
+    toggleLabel.addEventListener('mouseover', function (event)
+    {
+        const popupInfo = event.target.control.labels[1];
+        if (popupInfo)
+        {
+            popupInfo.style.visibility = '';
+            if (!window.clearingPopup)
+            {
+                window.clearingPopup = true;
+                setTimeout(function (){ 
+                    popupInfo.style.visibility = 'hidden';
+                    window.clearingPopup = false; 
+                }, 3600);
+            }
+        } 
+    });
+    toggleLabel.addEventListener('mouseout', function (event)
+    {
+        const popupInfo = event.target.control.labels[1];
+        if (popupInfo)
+        {
+            popupInfo.style.visibility = 'hidden';
+        }
+    });
+}
+
+
+function getTurbo(time)
+{
+    if (window.KomputerTurbo)
+    {
+        return time < 1000 ? time * 0.75 : time * 0.5;
+    }
+    return time;
 }

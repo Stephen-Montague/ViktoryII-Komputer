@@ -4,12 +4,12 @@
     "background": {
         "service_worker": "komputer-worker.js"
     },
-    "description": "Adds computer opponents, Napoleonic sound effects, and a game editor for Viktory II on GamesByEmail.",
+    "description": "Expansion for the fast and fun wargame Viktory II.",
     "manifest_version":3,
-    "name": "Viktory II Komputer",
+    "name": "Viktory II Nations",
     "permissions": ["scripting", "tabs"],
     "host_permissions": ["http://gamesbyemail.com/Games/Viktory2*", "http://gamesbyemail.com/Games/Play*"],
-    "version": "2025.2.22.0",
+    "version": "2025.4.15.0",
     "icons": {
         "48": "img/icon-frigate-48.png",
         "128": "img/icon-frigate-128.png"
@@ -17,6 +17,7 @@
     "web_accessible_resources": [ { 
         "matches": ["http://gamesbyemail.com/*"],
         "resources": [
+            "img/Units_16_nations.png",
             "sound/battleInfantry1.ogg", 
             "sound/battleInfantry2.ogg",
             "sound/bells.ogg", 
@@ -30,6 +31,8 @@
             "sound/battleArtillery2.wav",
             "sound/battleCavalry1.wav",
             "sound/battleCavalry2.wav",
+            "sound/battleElephant1.wav",
+            "sound/battleElephant2.wav",
             "sound/bombard_a1.wav",
             "sound/bombard_a2.wav",
             "sound/bombard_f1.wav",
@@ -51,6 +54,9 @@
             "sound/place_c1.wav",
             "sound/place_c2.wav",
             "sound/place_c3.wav",
+            "sound/place_e1.wav",
+            "sound/place_e2.wav",
+            "sound/place_e3.wav",
             "sound/place_i1.wav",
             "sound/place_i2.wav",
             "sound/place_i3.wav",
@@ -64,7 +70,9 @@
             "sound/place_f2.wav",
             "sound/place_f3.wav",
             "sound/ship1.wav", 
-            "sound/ship2.wav"
+            "sound/ship2.wav",
+            "sound/stomp1.ogg",
+            "sound/stomp2.ogg"
         ]
     } ]
 }

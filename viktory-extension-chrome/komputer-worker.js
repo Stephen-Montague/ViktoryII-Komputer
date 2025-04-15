@@ -32,6 +32,14 @@ async function loadScript(targetTabId)
         world : "MAIN"
     });  
 
+    const imageURL = chrome.runtime.getURL('img/');
+    chrome.scripting.executeScript({
+        target : {tabId : targetTabId},
+        func: addImageSource,
+        args: [imageURL],
+        world : "MAIN"
+    });  
+
     chrome.scripting.executeScript({
         target : {tabId : targetTabId},
         files : [ "komputer-main.js" ],
@@ -43,3 +51,9 @@ function addAudioSource(url)
 {
     window.KomputerSoundPath = url;
 }
+
+function addImageSource(url)
+{
+    window.KomputerImagePath = url;
+}
+
