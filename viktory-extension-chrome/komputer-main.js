@@ -7850,7 +7850,7 @@ function getDocumentFooter()
 
 function gameEditorMouseDown(event, draggingMouse = false)
 {
-    if (isGameEditorDisabled())
+    if (isGameEditorDisabled() || isGhostClick(draggingMouse))
     {
         return; 
     }
@@ -7942,8 +7942,20 @@ function gameEditorMouseDown(event, draggingMouse = false)
             drawReset(thisGame, piece, output.data);
         }
         window.lastEditIndex = piece.index;
+        window.lastEditTime = Date.now();
         return;
     }
+}
+
+
+function isGhostClick(draggingMouse)
+{
+    if (draggingMouse || !window.lastEditTime)
+    {
+        return false;
+    }
+    const timeElapsed = Date.now() - window.lastEditTime;
+    return timeElapsed < 100 ? true : false;
 }
 
 
