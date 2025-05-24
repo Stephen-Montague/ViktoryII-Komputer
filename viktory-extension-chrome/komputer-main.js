@@ -7,6 +7,7 @@
      - Movement Visuals
      - Dark Mode Visuals
      - Game Editor
+     - Android Touch Support
      - Performance Upgrades
      - Miscellaneous Patches
     By Stephen Montague 
@@ -67,6 +68,8 @@ function setupGameExtension()
     }
     if (isGameReady(thisGame))
     {
+        initKomputer();
+        addArrayPool();
         patchControls();
         addTouchSupport();
         patchGamePrototype(thisGame);
@@ -84,16 +87,67 @@ function setupGameExtension()
             addLocalMultiplayer(thisGame);
             addSound(thisGame);
             addTurboToggle();
+            addKomputerOptions(thisGame);
             cacheElementsForStyling();
         }
-        window.onerror = function() 
+        window.onerror = function(error) 
         {
-            console.warn("Caught error. Will reset controls.");
-            stopAndReset(true);
+            handleError(error);
+            return true;
+        }
+        window.onunhandledrejection = function (error)
+        {
+            handleError(error);
+            return true;
         }
         return true;
     }
     return false;
+}
+
+
+function initKomputer()
+{
+    if (!window.Komputer)
+    {
+        window.Komputer = {};
+    }
+}
+
+
+function handleError(error)
+{
+    if (error === "Uncaught Error: Force Stop.")
+    {
+        console.log("Play aborted due to Stop Button click.");
+        return;
+    }
+    console.log("Caught error: ");
+    console.log(error);
+    if (window.ErrorCount > 2)
+    {
+        console.log("Will reset controls.");
+        stopAndReset(true);
+    }
+    else
+    {
+        window.ErrorCount++;
+        console.log("Will resume play.")
+        setTimeout( function ()
+        {
+            let thisGame = findGameForActiveTab();
+            runKomputer(thisGame);
+        }, 200);
+    }
+}
+
+
+function addArrayPool()
+{
+    if (!window.Komputer.arrayPool)
+    {
+        window.Komputer.arrayPool = [];
+    }
 }
 
 
@@ -170,21 +224,32 @@ function isGameReady(thisGame)
 // Begin Play
 function runKomputerClick(thisGame)
 {
-    if (window.isKomputerReady)
+    if (!window.isKomputerReady || isGhostClick())
     {
-        if (thisGame.previewing || thisGame.player.isMyTurn())
+        return;
+    }
+    window.lastClickTime = Date.now(); 
+    if (thisGame.player.isMyTurn() && isKomputerPlayApproved(thisGame.perspectiveColor))
+    {
+        clearLastAction(thisGame);
+        patchPieceData(thisGame);
+        resetGlobals();
+        disableGameEditor();
+        styleButtonForRun();
+        styleBoardForRun(thisGame.perspectiveColor);
+        hideOptionsMenu();
+        runKomputer(thisGame);
+    }
+    else
+    {
+        window.isKomputerReady = false;
+        const isGameWon = thisGame.checkForWin();
+        if (isGameWon)
         {
-            clearLastAction(thisGame);
-            patchPieceData(thisGame);
-            resetGlobals();
-            disableGameEditor();
-            styleButtonForRun();
-            runKomputer(thisGame);
+            handleWinState(thisGame);
         }
         else
         {
-            window.isKomputerReady = false;
-            const isGameWon = thisGame.checkForWin();
             const alternateMessage = "Enemy Turn";
             resetKomputerButtonStyle(isGameWon, alternateMessage);
             setTimeout(function()
@@ -247,12 +312,13 @@ function clearIntervalsAndTimers(thisGame)
 function resetGlobals(resetKomputerButton = false)
 {
     const thisGame = findGameForActiveTab();
+    const playerCount = (thisGame.numberOfDistinctPlayers > 0) ? thisGame.numberOfDistinctPlayers : thisGame.teams.length;
     verifyElementalIds(thisGame);
     window.currentPlayerTurn = thisGame.perspectiveColor;
     window.isSmallBoard = thisGame.pieces.length === 62;
     window.isLargeBoard = !window.isSmallBoard;
-    window.isExtraLargeBoard = thisGame.numberOfDistinctPlayers > 4;
-    window.isWorldExplored = markIsWorldExplored(thisGame);
+    window.isExtraLargeBoard = playerCount > 4;
+    window.isWorldExplored = checkIsWorldExplored(thisGame);
     window.moveIntervalIds = [];
     window.reserveIntervalIds = [];
     window.flashIds = [];
@@ -263,7 +329,7 @@ function resetGlobals(resetKomputerButton = false)
     window.primaryTargetColors = null;
     window.moveWave = 0;
     window.movingUnitIndex = 0;
-    window.waitCount = 0;
+    window.ErrorCount = 0;
     window.lastMovedUnit = null;
     window.movingToAttackIndex = null;
     window.movingToAttackOrigin = null;
@@ -354,6 +420,23 @@ function clearLastAction(thisGame)
 function handleWinState(thisGame)
 {
     playSound("win");
+    if (!thisGame)
+    {
+        thisGame = findGameForActiveTab();
+    }
+    if (KomputerNations.isActive)
+    {
+        let gameStateElement = document.getElementById("Foundation_Elemental_" + GameVersion + "_gameState");
+        if (gameStateElement)
+        {
+            const winnerName = getTeamNoun(getSelectedDescription(thisGame.perspectiveColor));
+            const prefix = "The ";
+            const specialCase = (winnerName === "Ottoman" || winnerName === "Mughal" || winnerName === "Qing" || winnerName == "Ashanti");
+            const firstHalf = specialCase ? prefix + winnerName : winnerName;
+            const secondHalf = specialCase ? " Win" : " Wins"
+            gameStateElement.innerText = firstHalf + secondHalf;
+        }
+    }
     setTimeout(function(){
         thisGame.maxMoveNumber = 0;
         window.isKomputerReady = true;
@@ -366,16 +449,43 @@ function moveUnits(thisGame)
 {
     const moveIntervalPeriod = getTurbo(1300);
     const initialDelay = 100;
-    setTimeout(function(){
+    setTimeout(async function(){
         switch (window.moveWave)
         {
             case 0: {
-                komputerLog("May move land units.");
-                let landUnits = findAvailableLandUnits(thisGame, thisGame.perspectiveColor);
-                const fromFarthest = true;
-                orderByDistanceToEnemy(thisGame, landUnits, fromFarthest);
-                prepareNextUnit(landUnits);
-                moveEachUnit(thisGame, landUnits, moveIntervalPeriod);
+                komputerLog("May move land units and rescue stranded units.");
+                let movingUnits = findAvailableLandUnits(thisGame, thisGame.perspectiveColor);
+                clearMoveData(movingUnits);
+                let frigates = findFrigates(thisGame, [thisGame.perspectiveColor]);
+                clearMoveData(frigates);
+                let boarders = await findAllBoarders(thisGame, movingUnits, frigates);
+                let shouldPreboard = false;
+                let strandedUnits = [];
+                if (boarders)
+                {
+                    komputerLog("Preboarding...");
+                    movingUnits = boarders;
+                    shouldPreboard = true;
+                }
+                else if (await hasStrandedUnits(thisGame, movingUnits, strandedUnits, frigates) && shouldPickup(thisGame, strandedUnits, frigates))
+                {
+                    komputerLog("Moving to pickup.");
+                    movingUnits = frigates;
+                    shouldPreboard = true;
+                }
+                else if (await completingMove(thisGame, frigates))
+                {
+                    komputerLog("Moving to dropoff.");
+                    movingUnits = frigates;
+                    shouldPreboard = true;
+                }
+                else
+                {
+                    orderByDistanceToEnemy(thisGame, movingUnits);
+                    prepareNextUnit(movingUnits);
+                }
+                const isHoldingWave = false;
+                moveEachUnit(thisGame, movingUnits, moveIntervalPeriod, isHoldingWave, shouldPreboard);
                 break;
             }
             case 1: {
@@ -388,8 +498,9 @@ function moveUnits(thisGame)
             case 2: {
                 komputerLog("May move all available.");
                 let army = findAvailableLandUnits(thisGame, thisGame.perspectiveColor).concat(window.holdingUnits);
-                const navy = findFrigates(thisGame, [thisGame.perspectiveColor]);
-                const armyNavy = army.concat(navy);
+                const navy = findFrigates(thisGame, [thisGame.perspectiveColor], true);
+                const hasAmphib = (navy.length && navy[0].cargo.length);
+                const armyNavy = hasAmphib ? navy.concat(army) : army.concat(navy);
                 prepareNextUnit(armyNavy);
                 moveEachUnit(thisGame, armyNavy, moveIntervalPeriod);
                 break;
@@ -407,8 +518,8 @@ function moveUnits(thisGame)
                 break;
             }
             default: {
-                console.warn("Stop and reset due to invalid moveWave: " + window.moveWave)
-                stopAndReset();
+                handleError("Unhandled moveWave: " + window.moveWave)
+                window.moveWave = 2;
                 break;
             }
         }
@@ -416,7 +527,195 @@ function moveUnits(thisGame)
 }
 
 
-function markIsWorldExplored(thisGame)
+function clearMoveData(units)
+{
+    for (let unit of units)
+    {
+        unit.bestMove = null;
+        unit.possibleMoves = null;
+    }
+}
+
+
+async function findAllBoarders(thisGame, landUnits, frigates)
+{
+    if (!landUnits.length || !frigates.length)
+    {
+        return null;
+    }
+    let boarders = [];
+    for (const frigate of frigates)
+    {
+        if (frigate.movementComplete || !checkHasCapacity(frigate))
+        {
+            continue;
+        }
+        await addFrigateBoarders(thisGame, frigate, boarders);
+    }
+    return boarders.length ? boarders : null;
+}
+
+
+function shouldPickup(thisGame, strandedUnits, frigates)
+{
+    if (!frigates.length)
+    {
+        return false;
+    }
+    for (let frigate of frigates)
+    {
+        if (frigate.movementComplete || !checkHasCapacity(frigate))
+        {
+            continue;
+        }
+        for (let strandedUnit of strandedUnits)
+        {
+            if (!strandedUnit || !strandedUnit.piece || strandedUnit.movementComplete)
+            {
+                continue;
+            }
+            let loadData = {};
+            const viaCargo = true;
+            const allowBattle = false;
+            if (!isAccessibleNow(strandedUnit.piece, frigate, viaCargo, allowBattle, loadData))
+            {
+                continue;
+            }
+            const transitFrigate = thisGame.pieces[loadData.index].addUnit(thisGame.perspectiveColor, frigate.type);
+            transitFrigate.spacesMoved = frigate.spacesMoved + loadData.spacesNeeded;
+            if (hasAmphibTarget(thisGame, transitFrigate, viaCargo, allowBattle)) 
+            {
+                frigate.bestMove = thisGame.boardPointFromValueIndex(loadData.index).clone();
+                frigate.bestMove.index = loadData.index;
+                frigate.possibleMoves = loadData.possibleMoves;
+                thisGame.pieces[loadData.index].removeUnit(transitFrigate);
+                return true;
+            }
+            thisGame.pieces[loadData.index].removeUnit(transitFrigate);
+        }
+    }
+    return false;
+}
+
+
+async function hasStrandedUnits(thisGame, landUnits, strandedUnits, checkFrigates = null)
+{
+    if (checkFrigates && !checkFrigates.length)
+    {
+        return false;
+    }
+    for (let unit of landUnits)
+    {
+        if (await isBestScoreBad(thisGame, unit))
+        {
+            strandedUnits.push(unit);
+        }
+    }
+    return strandedUnits.length ? true : false;
+}
+
+
+async function isBestScoreBad(thisGame, unit)
+{
+    const possibleMoves = getKomputerMovables(unit);
+    if (!possibleMoves)
+    {
+        return true;
+    }
+    const maxBadScore = 0.72;
+    return !(await hasGoodMove(thisGame, possibleMoves, unit, maxBadScore));
+}
+
+
+async function addFrigateBoarders(thisGame, frigate, allBoarders)
+{
+    let initialBoarders = [];
+    const adjacentIndecies = frigate.piece.getAdjacentIndecies(1);
+    for (const adjacentIndex of adjacentIndecies)
+    {
+        const adjacentPiece = thisGame.pieces[adjacentIndex];
+        if (adjacentPiece.isLand() && adjacentPiece.hasMilitary(frigate.color) && !adjacentPiece.hasBattle(thisGame.perspectiveColor, -1))
+        {
+            for (const unit of adjacentPiece.units)
+            {
+                if (!unit.isLandUnit() || unit.movementComplete)
+                {
+                    continue;
+                }
+                let possibleMoves = getKomputerMovables(unit);
+                if (!possibleMoves)
+                {
+                    continue;
+                }
+                const favorOffense = true;
+                const getScore = false;
+                const preboard = true;
+                let bestMove = await decideBestMove(thisGame, possibleMoves, unit, favorOffense, getScore, preboard);
+                if (bestMove.index === frigate.piece.index) 
+                {
+                    if (checkHasCapacity(frigate, initialBoarders.length))
+                    {
+                        unit.bestMove = bestMove;
+                        initialBoarders.push(unit);
+                    }
+                    else
+                    {
+                        addBoarders(initialBoarders, allBoarders);
+                        return;
+                    }
+                }
+            }
+        }
+    }
+    addBoarders(initialBoarders, allBoarders);
+}
+
+
+function addBoarders(initialBoarders, allBoarders)
+{
+    for (const initialBoarder of initialBoarders)
+    {
+        allBoarders.push(initialBoarder);
+    }
+}
+
+
+function checkHasCapacity(frigate, additionalCargoCount = 0)
+{
+    const maxCapacity = GamesByEmail.Viktory2Unit.CARGO_CAPACITY.f
+    const capacityUsed = frigate.cargo.length + frigate.cargoUnloaded + additionalCargoCount;
+    return (capacityUsed < maxCapacity); 
+}
+
+
+async function completingMove(thisGame, frigates)
+{
+    if (!frigates.length)
+    {
+        return false;
+    }
+    for (const frigate of frigates)
+    {
+        if (!frigate.movementComplete && frigate.hasUnloadables())
+        {
+            frigate.possibleMoves = getFrigateMovables(frigate);
+            frigate.bestMove = await decideBestMove(thisGame, frigate.possibleMoves, frigate, true);
+            while (frigates.indexOf(frigate) !== (frigates.length-1))
+            {
+                frigates.pop();
+            }
+            while (frigates.indexOf(frigate) !== 0)
+            {
+                frigates.shift();
+            }
+            return true;
+        }
+    }
+    return false
+}
+
+
+function checkIsWorldExplored(thisGame)
 {
     let isExplored = true; 
     for (const piece of thisGame.pieces)
@@ -461,13 +760,14 @@ function findAvailableLandUnits(thisGame, color)
 function orderByDistanceToEnemy(thisGame, units, fromFarthest = true)
 {
     // Skip to improve performance on large boards.
-    if (thisGame.numberOfDistinctPlayers > 3 || units.length > 16)
+    const maxUnitCount = window.KomputerTurbo ? 16 : 24;
+    if (units.length > maxUnitCount)
     {
         return;
     }
     const enemyColors = getEnemyColors(thisGame);
     let enemyArmies = getArmyUnits(thisGame, enemyColors);
-    if (!enemyArmies || enemyArmies.length > 16)
+    if (!enemyArmies || enemyArmies.length > maxUnitCount)
     {
         return;
     }
@@ -497,7 +797,8 @@ function orderByDistanceToEnemy(thisGame, units, fromFarthest = true)
 
 function getEnemyColors(thisGame)
 {
-    const colorCount = thisGame.numberOfDistinctPlayers;
+    const playerCount = (thisGame.numberOfDistinctPlayers > 0) ? thisGame.numberOfDistinctPlayers : thisGame.teams.length;
+    const colorCount = playerCount;
     if (colorCount === 2)
     {
         return [!thisGame.perspectiveColor * 1];
@@ -529,14 +830,18 @@ function prepareNextUnit(unitList)
     }
     window.movingUnitIndex = 0;
     const firstUnit = unitList[window.movingUnitIndex];
-    if (firstUnit.index === lastMovedUnit.index && firstUnit.type === lastMovedUnit.type && firstUnit.piece.index === lastMovedUnit.piece.index)
+    if (firstUnit && (firstUnit.index === lastMovedUnit.index) && (firstUnit.type === lastMovedUnit.type) && (firstUnit.piece.index === lastMovedUnit.piece.index))
     {
         return;
     }
     let nextUnitIndex = null;
     for (let i = 0; i < unitList.length; i++)
     {
-        const unit = unitList[i]
+        const unit = unitList[i];
+        if (!unit || !unit.piece)
+        {
+            continue;
+        }
         if (unit.index === lastMovedUnit.index && unit.type === lastMovedUnit.type && unit.piece.index === lastMovedUnit.piece.index)
         {
             nextUnitIndex = i;
@@ -555,7 +860,7 @@ function prepareNextUnit(unitList)
 }
 
 
-function findFrigates(thisGame, colors, loadedFirst = false, pieceList = null)
+function findFrigates(thisGame, colors, loadedFirst = false, pieceList = null, noBattles = true)
 {
     let frigates = [];
     if (pieceList === null)
@@ -565,7 +870,7 @@ function findFrigates(thisGame, colors, loadedFirst = false, pieceList = null)
     for (const piece of pieceList)
     {
         const isReserve = piece.valueIndex === - 1;
-        if (isReserve || piece.hasBattle(thisGame.perspectiveColor, -1))
+        if (piece.hidden || piece.isDark || isReserve || (piece.hasBattle(thisGame.perspectiveColor, -1) && noBattles))
         {
             continue;
         }
@@ -606,8 +911,7 @@ function handleBattles(thisGame)
         }
         else
         {
-            console.warn("Game reports a battle pending but none found.")
-            stopAndReset(true);
+            handleError("Game reports a battle pending but none found.");
         }
     }
     else
@@ -625,11 +929,12 @@ function handleHoldingUnits(thisGame, moveIntervalPeriod)
         window.doHoldingWave = false;
         const stragglers = findAvailableLandUnits(thisGame, thisGame.perspectiveColor);
         const holdingUnits = window.holdingUnits.length ? stragglers.concat(window.holdingUnits) : stragglers.concat(findHoldingUnits(thisGame));
-        if (holdingUnits.length)
+        const possibleLastMovers = holdingUnits.concat(findFrigates(thisGame, [thisGame.perspectiveColor], true));
+        if (possibleLastMovers.length)
         {
             const isHoldingWave = true;
-            prepareNextUnit(holdingUnits);
-            moveEachUnit(thisGame, holdingUnits, moveIntervalPeriod, isHoldingWave);
+            prepareNextUnit(possibleLastMovers);
+            moveEachUnit(thisGame, possibleLastMovers, moveIntervalPeriod, isHoldingWave);
         }
         else
         {
@@ -687,29 +992,24 @@ function endMovementPhase(thisGame)
             }
             else if(window.currentPlayerTurn !== thisGame.perspectiveColor)
             {
-                resetKomputerButtonStyle();
-                window.isKomputerReady = true;
-                komputerLog("Done.");
+                if (!playingNextTurn(thisGame))
+                {
+                    resetKomputerButtonStyle();
+                    window.isKomputerReady = true;
+                    komputerLog("Done.");
+                }
             }
             else
             {    
-                if (window.waitCount > 0)
-                {
-                    console.warn("Cannot end movement phase.");
-                    stopAndReset(true);
-                    return;
-                }
-                window.waitCount++;
-                window.moveWave--;
-                // There may be an alert, so wait for user to clear.
-                setTimeout(function(){ runKomputer(thisGame)}, 4000);
+                window.moveWave = 0;
+                handleError("Cannot end movement phase.");
             }
         }, 100);
     }, 100);
 }
 
 
-async function moveEachUnit(thisGame, movableUnits, intervalPeriod, isHoldingWave = false)
+async function moveEachUnit(thisGame, movableUnits, intervalPeriod, isHoldingWave = false, isPreboard = false)
 {
     window.moveIntervalIds.push(setInterval(async function moveUnitInterval()
     {
@@ -723,13 +1023,13 @@ async function moveEachUnit(thisGame, movableUnits, intervalPeriod, isHoldingWav
             return;
         }
         window.isMoving = true;
-        if (!isHoldingWave && fightPreMoveBattles(thisGame))
+        if (!isHoldingWave && !isPreboard && fightPreMoveBattles(thisGame))
         {
             return;
         }
         // Get the next unit and decide if it may move.
         const nextUnitIndex = getNextUnitIndex(thisGame, movableUnits);
-        const isClickable = ensureIsClickable(thisGame, movableUnits, nextUnitIndex);
+        const isClickable = ensureClickable(thisGame, movableUnits, nextUnitIndex);
         const unit = movableUnits[nextUnitIndex];
         const firstMainWave = 0;
         const finalMainWave = 2;
@@ -739,14 +1039,21 @@ async function moveEachUnit(thisGame, movableUnits, intervalPeriod, isHoldingWav
         const mayMove = decideMayMove(thisGame, unit, firstMainWave, finalMainWave, isClickable);
         if (mayMove)
         {
-            possibleMoves = unit.isFrigate() ? getFrigateMovables(unit) : getKomputerMovables(unit); 
+            if (isPreboard)
+            {
+                possibleMoves = unit.possibleMoves ? unit.possibleMoves : unit.bestMove ? true : false;
+            }
+            else
+            {
+                possibleMoves = unit.isFrigate() ? getFrigateMovables(unit) : getKomputerMovables(unit); 
+            }
             if (possibleMoves)
             {
                 // Decide best move, or don't accept any to stay.
-                const favorOffense = shouldFavorOffense(thisGame, firstMainWave, movableUnits.length);
-                const bestMove = await decideBestMove(thisGame, possibleMoves, unit, favorOffense);
+                const favorOffense = isPreboard ? true : shouldFavorOffense(thisGame, firstMainWave, movableUnits.length);
+                const bestMove = isPreboard ? unit.bestMove : await decideBestMove(thisGame, possibleMoves, unit, favorOffense);
                 const pieceIndex = bestMove.index;
-                shouldAcceptMove = await decideMoveAcceptance(thisGame, unit, pieceIndex, isHoldingWave);
+                shouldAcceptMove = isPreboard ? true : await decideMoveAcceptance(thisGame, unit, pieceIndex, isHoldingWave);
                 komputerLog(shouldAcceptMove);
                 if (shouldAcceptMove)
                 {
@@ -773,6 +1080,7 @@ async function moveEachUnit(thisGame, movableUnits, intervalPeriod, isHoldingWav
                                     playMoveSound(unit);
                                 }
                                 hideEndTurnButtons();
+                                isUnitSelected = false;
                                 // Commit to explore.
                                 const normalPopup = document.getElementById("Foundation_Elemental_" + GameVersion + "_overlayCommit");
                                 if ((normalPopup || document.getElementById("Foundation_Elemental_" + GameVersion + "_customizeMapDoAll")) &&
@@ -800,17 +1108,27 @@ async function moveEachUnit(thisGame, movableUnits, intervalPeriod, isHoldingWav
                     {
                         komputerLog("Failed to select unit for move. Logging unit.");
                         komputerLog(unit);
-                        clearMovementFlags();
+                        clearMovementFlags(unit, false);
                         window.lastMovedUnit = null;
                     }   
                 } // End if shouldAcceptMove
             } // End if possibleMoves
         } // End if may move
-        const processMoveUpdateTime = mayMove && possibleMoves && shouldAcceptMove && isUnitSelected ? intervalPeriod - 200 : 200;
-        setTimeout(function(){ 
-            // Ideally, the next decision is made before the next interval and allows time to process the previous.
-            // In any case, it should make the right decision - worst case, it waits for the next interval.
-            decideHowToContinueMove(thisGame, movableUnits, unit, finalMainWave);}, processMoveUpdateTime);
+        const processMoveSuccess = (mayMove && possibleMoves && shouldAcceptMove && isUnitSelected);
+        if (!processMoveSuccess)
+        {
+            clearMovementFlags(unit, false);
+        }
+        const processMoveUpdateTime = processMoveSuccess ? intervalPeriod - 152 : 200;
+        setTimeout(function()
+        {
+            if (isUnitSelected)
+            {
+                window.isMoving = false;
+                return;
+            } 
+            decideHowToContinueMove(thisGame, movableUnits, unit, finalMainWave, isPreboard);
+        }, processMoveUpdateTime);
     }, intervalPeriod));
 }
 
@@ -846,7 +1164,7 @@ function fightPreMoveBattles(thisGame)
                     playSound("battleCiv");
                     KomputerSound.bellsPlayedThisTurn = true;
                 }
-                if (window.isUnloading || isNotOverkill(thisGame, piece))
+                if (window.isUnloading || isNotOverkill(thisGame, piece) || willGetAmphibLanding(thisGame, piece))
                 {
                     continue;
                 }
@@ -866,12 +1184,36 @@ function fightPreMoveBattles(thisGame)
 }
 
 
-function clearMovementFlags()
+function willGetAmphibLanding(thisGame, piece)
 {
-    window.isMoving = false;
-    window.isBombarding = false
-    window.isExploring = false;
+    let pieceList = [];
+    const adjacentIndecies = piece.getAdjacentIndecies(1);
+    for (const index of adjacentIndecies)
+    {
+        pieceList.push(thisGame.pieces[index]);
+    }
+    const frigates = findFrigates(thisGame, [thisGame.perspectiveColor], true, pieceList);
+    for (const frigate of frigates)
+    {
+        if (frigate.hasUnloadables() && (frigate.disembarkIndex === piece.index))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+
+function clearMovementFlags(unit = null, clearMoving = true)
+{
+    if (unit)
+    {
+        unit.isManeuveringToAttack = false;
+    }
+    window.isMoving = clearMoving ? false : true;
     window.isManeuveringToAttack = false;
+    window.isExploring = false;
+    window.isBombarding = false
     window.isUnloading = false;
 }
 
@@ -894,7 +1236,7 @@ function getNextUnitIndex(thisGame, movableUnits)
 }
 
 
-function ensureIsClickable(thisGame, movableUnits, nextUnitIndex)
+function ensureClickable(thisGame, movableUnits, nextUnitIndex)
 {
     // If there's another movable unit of the same type and status in front, insert the other unit at the next unit index. 
     let movableUnit = movableUnits[nextUnitIndex];
@@ -905,11 +1247,11 @@ function ensureIsClickable(thisGame, movableUnits, nextUnitIndex)
     let piece = movableUnit.piece;
     for (const unit of piece.units)
     {
-        if (unit.movementComplete || unit.index === movableUnit.index || !movableUnits.includes(unit))
+        if (unit.movementComplete || unit.index === movableUnit.index || !unit.isMilitary() || !movableUnits.includes(unit))
         {
             continue;
         } 
-        if (unit.type === movableUnit.type && unit.retreatIndex === movableUnit.retreatIndex && unit.zIndex > movableUnit.zIndex)
+        if (unit.type === movableUnit.type && unit.zIndex > movableUnit.zIndex) // unit.retreatIndex === movableUnit.retreatIndex && 
         {
             movableUnits.splice(nextUnitIndex, 0, movableUnits.splice(movableUnits.indexOf(unit), 1)[0]);
         }
@@ -937,7 +1279,7 @@ function decideMayMove(thisGame, unit, firstMoveWave, finalMoveWave, canClick)
     {
         return false;
     }
-    // When unit can move or unload:
+    // Unit can move or unload:
     if (!unit.movementComplete || unit.hasUnloadables())
     {
         // Empty frigates shouldn't move on the last wave.
@@ -960,6 +1302,10 @@ function decideMayMove(thisGame, unit, firstMoveWave, finalMoveWave, canClick)
             }
         }
     }
+    if (unit.movementComplete && !unit.canBombard() && !unit.hasUnloadables())
+    {
+        return false;
+    }
     if (unit.isFrigate() && !unit.hasUnloadables())
     {
         window.isUnloading = false;
@@ -970,11 +1316,13 @@ function decideMayMove(thisGame, unit, firstMoveWave, finalMoveWave, canClick)
 
 function isNotValidUnit(thisGame, unit)
 {
-    return (!unit || !unit.piece || !thisGame.pieces[unit.piece.index].units[unit.index]); 
+    return (!unit || !unit.piece || !unit.piece.pieces || !thisGame.pieces[unit.piece.index].units[unit.index] || 
+        (unit !== thisGame.pieces[unit.piece.index].units[unit.index])
+    ); 
 }
 
 
-function komputerLog(data)
+function komputerLog(data, isMoveLog = false)
 {
     if (!window.hasKomputerLog)
     {
@@ -986,11 +1334,7 @@ function komputerLog(data)
     }
     else if (data)
     {
-        if (typeof(data) === "string")
-        {
-            console.log(data);
-        }
-        else
+        if (isMoveLog)
         {
             const thisGame = data.game;
             const unit = data.unit;
@@ -1007,6 +1351,10 @@ function komputerLog(data)
             const moveScore = " has a best move score of " + bestMoveScore; 
             const moveDestination = " on the " + destinationTerrain + " of hex " + bestMoveIndex + ".";
             console.log(moveOrigin + moveScore + moveDestination);
+        }
+        else
+        {
+            console.log(data);
         }
     }
     else
@@ -1186,11 +1534,11 @@ function decideFrigateFlags(thisGame, unit, finalMoveWave, pieceIndex)
 }
 
 
-function decideHowToContinueMove(thisGame, movableUnits, unit, finalMoveWave)
+function decideHowToContinueMove(thisGame, movableUnits, unit, finalMoveWave, isPreboard = false)
 {
     hideEndTurnButtons();
+    confirmManeuverFlag(unit); 
     window.isMoving = false;
-    window.isManeuveringToAttack = (window.isManeuveringToAttack && !unit.movementComplete && !unit.holding) ? true : false;
     if (window.isExploring || window.isBombarding || window.isUnloading || window.isManeuveringToAttack || window.hasBattleBegun)
     {
         // Wait for above to finish.
@@ -1202,6 +1550,7 @@ function decideHowToContinueMove(thisGame, movableUnits, unit, finalMoveWave)
         window.lastMovedUnit = null;
         window.movingUnitIndex = 0;
         window.isManeuveringToAttack = false; 
+        unit.isManeuveringToAttack = false;
         unit.movementComplete = true;
         unit.holding = false;
         clearMoveIntervals();
@@ -1211,7 +1560,7 @@ function decideHowToContinueMove(thisGame, movableUnits, unit, finalMoveWave)
     // If more units, when the last-moved unit is done, move the next unit.
     if ((window.movingUnitIndex + 1) < movableUnits.length)
     {
-        if (window.lastMovedUnit)
+        if (window.lastMovedUnit && !isPreboard)
         {
             const lastMovedUnit = window.lastMovedUnit;
             const isValidUnit = (lastMovedUnit && lastMovedUnit.piece && thisGame.pieces[lastMovedUnit.piece.index].units[lastMovedUnit.index] && 
@@ -1229,32 +1578,52 @@ function decideHowToContinueMove(thisGame, movableUnits, unit, finalMoveWave)
                 return;
             }
         } 
+        unit.isManeuveringToAttack = false;
         window.movingUnitIndex++;
         return;
     }
     // Clear and reset for next wave.
     clearMoveIntervals();
+    clearMovementFlags(unit);
     window.movingUnitIndex = 0;
-    window.moveWave++;
+    if (isPreboard)
+    {
+        window.moveWave = 0;
+    }
+    else
+    {
+        window.moveWave++;
+    }
     runKomputer(thisGame);
     return;
 }
 
 
-function shouldBombard(thisGame, unit, finalMoveWave)
+function confirmManeuverFlag(unit)
 {
-    return (unit && unit.piece && unit.canBombard() && (unit.movementComplete || window.moveWave >= finalMoveWave) &&
-        (hasAdjacentEnemyArmy(thisGame, unit.piece) || hasAdjacentEnemyFrigate(thisGame, unit.piece)));
+    window.isManeuveringToAttack = (window.isManeuveringToAttack && unit.isManeuveringToAttack && !unit.movementComplete && !unit.holding) ? true : false;
 }
 
 
-async function decideBestMove(thisGame, movePoints, unit, favorOffense, getScore = false)
+function shouldBombard(thisGame, unit, finalMoveWave)
+{
+    if (isNotValidUnit(thisGame, unit) || !unit.canBombard())
+    {
+        return false;
+    }
+    const hasFrigatePin = hasAdjacentEnemyFrigate(thisGame, unit.piece);
+    return (hasFrigatePin && unit.piece.hasCivilization(thisGame.perspectiveColor)) ||
+    ((unit.movementComplete || window.moveWave >= finalMoveWave) && (hasFrigatePin || hasAdjacentEnemyArmy(thisGame, unit.piece)));
+}
+
+
+async function decideBestMove(thisGame, movePoints, unit, favorOffense, getScore = false, preboarding = false)
 {
     let bestMoveScore = -1;
     let bestMoves = [];
     for (const movePoint of movePoints)
     {
-        const possibleMoveScore = await getMoveScore(thisGame, movePoint, unit, favorOffense);
+        const possibleMoveScore = await getMoveScore(thisGame, movePoint, unit, favorOffense, preboarding);
         if (possibleMoveScore > bestMoveScore)
         {
             bestMoveScore = possibleMoveScore;
@@ -1270,35 +1639,46 @@ async function decideBestMove(thisGame, movePoints, unit, favorOffense, getScore
     {
         return bestMoveScore;
     }
-    else
+    const bestMove = bestMoves.length > 1 ? getRandomItem(bestMoves) : bestMoves[0];
+    if (!preboarding && window.hasKomputerLog)
     {
-        const bestMove = bestMoves.length > 1 ? getRandomItem(bestMoves) : bestMoves[0];
-        if (window.hasKomputerLog)
-        {
-            const moveData = {game: thisGame, unit: unit, score: bestMoveScore, bestMoveIndex: bestMove.index};
-            komputerLog(moveData);
-        }
-        return bestMove;
+        const moveData = {game: thisGame, unit: unit, score: bestMoveScore, bestMoveIndex: bestMove.index};
+        komputerLog(moveData, true);
     }
+    return bestMove;
 }
 
 
-async function getMoveScore(thisGame, possibleMovePoint, unit, favorOffense)
+async function hasGoodMove(thisGame, movePoints, unit, targetScore)
+{
+    for (const movePoint of movePoints)
+    {
+        const possibleScore = await getMoveScore(thisGame, movePoint, unit, true);
+        if (possibleScore > targetScore)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+
+async function getMoveScore(thisGame, possibleMovePoint, unit, favorOffense, preboard = false)
 {
     // Get score in range [0, 1].
     const piece = thisGame.pieces[possibleMovePoint.index];
     const enemyColor = piece.getOpponentColor(thisGame.perspectiveColor);
     const primaryTargetColors = window.primaryTargetColors ? window.primaryTargetColors : decidePrimaryTargetColors(thisGame);
+    if (!window.enemyTargets.length)
+    {
+        await rankEnemyTargets(thisGame);
+    }
     if (unit.isFrigate())
     {
         return getFrigateMoveScore(thisGame, piece, unit, enemyColor, primaryTargetColors);
     }
     else
     {
-        if (!window.enemyTargets.length)
-        {
-            await rankEnemyTargets(thisGame);
-        }
         const terrainDefenseBonus = getTerrainDefenseBonus(piece); 
         let score = 0;
         if (piece.hasRollingOpponent(thisGame.perspectiveColor))
@@ -1307,7 +1687,7 @@ async function getMoveScore(thisGame, possibleMovePoint, unit, favorOffense)
         }
         else if (hasAdjacentEnemyLandContact(thisGame, piece))
         {
-            score = getContactEnemyScore(thisGame, unit, piece, possibleMovePoint, terrainDefenseBonus, primaryTargetColors);
+            score = getContactEnemyScore(thisGame, unit, piece, possibleMovePoint, terrainDefenseBonus, primaryTargetColors, preboard);
         }
         else if (piece.hasCivilization(thisGame.perspectiveColor))
         {
@@ -1315,7 +1695,7 @@ async function getMoveScore(thisGame, possibleMovePoint, unit, favorOffense)
         }
         else if (piece.hasFrigate(thisGame.perspectiveColor))
         {
-            score = await getBoardingFrigateScore(thisGame, unit, piece);
+            score = await getBoardingFrigateScore(thisGame, piece);
         }
         else
         {
@@ -1366,63 +1746,113 @@ function getCenterPiece(thisGame)
 }
 
 
-function getCenterPieceBoardPoint(thisGame)
+function getCenterPiecePoint(thisGame)
 {
     const centerPieceIndex = Math.floor((thisGame.pieces.length * 0.5) - 1);
     return thisGame.pieces[centerPieceIndex].boardPoint.clone(); 
 }
 
 
-function getEuclideanDistanceToPoint(pointA, pointB)
+function guessTravelCostToTarget(thisGame, unit, pieceOrigin)
 {
-    return Math.sqrt((pointA.x-pointB.x)*(pointA.x-pointB.x)+(pointA.y-pointB.y)*(pointA.y-pointB.y));
+    // Find an exact path on visible terrain to the nearest enemy.
+    const playerCount = (thisGame.numberOfDistinctPlayers > 0) ? thisGame.numberOfDistinctPlayers : thisGame.teams.length;
+    const maxDistance = playerCount > 5 ? 16 : 24; 
+    let travelCost = findPathCostToEnemy(thisGame, unit, pieceOrigin, maxDistance);
+    // Otherwise find a manhattan distance, either to an enemy starting hex or to a nearest hidden hex, if any, else the center hex.
+    if (travelCost === maxDistance)
+    {
+        let destinationPoint = null;
+        const enemyColors = getEnemyColors(thisGame);
+        const enemyColor = getRandomItem(enemyColors);
+        const originPoint = pieceOrigin.boardPoint.clone();
+        if (Math.random() < 0.6)
+        {
+            destinationPoint = getRandomItem(thisGame.getCapitalPoints(thisGame.info.board, enemyColor, thisGame.playOptions, false)); 
+        }
+        else
+        {
+            let hiddenPieces = [];
+            let minManhattanDistance = Number.MAX_VALUE;
+            for (const piece of thisGame.pieces)
+            {
+                if (piece.hidden)
+                {
+                    const manhattanDistance = thisGame.distanceBewteenPoints(originPoint, piece.boardPoint.clone());
+                    if (manhattanDistance < minManhattanDistance)
+                    {
+                        minManhattanDistance = manhattanDistance;
+                        hiddenPieces.length = 0;
+                        hiddenPieces.push(piece);
+                    }
+                    else if (manhattanDistance === minManhattanDistance)
+                    {
+                        hiddenPieces.push(piece);
+                    }
+                }
+            }
+            if (hiddenPieces.length)
+            {
+                destinationPoint = getRandomItem(hiddenPieces).boardPoint.clone();
+            }
+            else
+            {
+                destinationPoint = getCenterPiecePoint(thisGame);
+            }
+        }
+        travelCost = thisGame.distanceBewteenPoints(originPoint, destinationPoint);
+    }
+    return travelCost;
 }
 
 
-function guessTravelCostToEnemy(thisGame, unit, pieceOrigin)
-{    
-    const maxDistance = 32;
+function findPathCostToEnemy(thisGame, unit, pieceOrigin, maxDistance)
+{
     let travelCost = maxDistance;
-    let possibleUnit = pieceOrigin.addUnit(thisGame.perspectiveColor, unit.type);
+    let terrestialType = unit.isFrigate() ? unit.type : "c";
+    let possibleUnit = pieceOrigin.addUnit(thisGame.perspectiveColor, terrestialType);
     possibleUnit.movementAllowance = maxDistance;
-    const allReachablePoints = possibleUnit.getMovables();
+    let allReachablePoints = possibleUnit.getMovables();
     if (allReachablePoints && allReachablePoints.length)
     {
         for (const reachablePoint of allReachablePoints)
         {
             const reachablePiece = thisGame.pieces[reachablePoint.index];
+            if (reachablePiece.hidden)
+            {
+                continue;
+            }
             if (reachablePiece.hasRollingOpponent(thisGame.perspectiveColor) && reachablePoint.spacesNeeded < travelCost)
             {
-                travelCost = reachablePoint.spacesNeeded;
+                let isPathVisible = true;
+                let priorIndex = reachablePoint.retreatIndex;
+                let stepCount = 0;
+                const failSafe = maxDistance;
+                while ((priorIndex !== pieceOrigin.index) && (stepCount < failSafe))
+                {
+                    let priorPiece = thisGame.pieces[priorIndex];
+                    if (priorPiece.hidden)
+                    {
+                        isPathVisible = false;
+                        break;
+                    }
+                    for (let point of allReachablePoints)
+                    {
+                        if (point.index === priorIndex)
+                        {
+                            priorIndex = point.retreatIndex;
+                        }
+                    }
+                    stepCount++;
+                }
+                if (isPathVisible)
+                {
+                    travelCost = reachablePoint.spacesNeeded;
+                }
             }        
         }
     }
     pieceOrigin.removeUnit(possibleUnit);
-    if (travelCost === maxDistance)
-    {
-        let destination = null;
-        const enemyColors = getEnemyColors(thisGame);
-        const enemyColor = getRandomItem(enemyColors);
-        if (Math.random() < 0.6)
-        {
-            destination = thisGame.pieces.findCapitalPiece(enemyColor);
-        }
-        else
-        {
-            const hiddenPieces = [];
-            for (const piece of thisGame.pieces)
-            {
-                if (piece.hidden)
-                {
-                    hiddenPieces.push(piece);
-                }
-            }
-            destination = hiddenPieces.length ? getRandomItem(hiddenPieces) : thisGame.pieces.findCapitalPiece(enemyColor);
-        }
-        destination = destination ? destination.boardPoint.clone() : getCenterPieceBoardPoint(thisGame);
-        const origin = pieceOrigin.boardPoint.clone();
-        travelCost = thisGame.distanceBewteenPoints(origin, destination);
-    }
     return travelCost;
 }
 
@@ -1456,7 +1886,7 @@ function getJoinBattleScore(thisGame, unit, piece, enemyColor, primaryTargetColo
         // Look for undefended civs.
         if (defendingUnitCount === 0)
         {
-            return piece.hasCapital(enemyColor) ? 0.99 : defendingRollCount === 1 ? 0.98 : 0.97;
+            return piece.hasCapital(enemyColor) ? 0.9999 : defendingRollCount === 1 ? 0.999 : 0.98;
         }
         // Look at all enemy civs.
         score = getCivAttackScore(thisGame, piece); 
@@ -1494,6 +1924,10 @@ function getJoinBattleScore(thisGame, unit, piece, enemyColor, primaryTargetColo
         if (isNotOverkill(thisGame, piece))
         {
             score = Math.sqrt(score); 
+        }
+        else
+        {
+            score *= 0.8;
         }
     }
     if (!primaryTargetColors.includes(enemyColor))
@@ -1549,12 +1983,13 @@ function hasAdjacentEnemyLandContact(thisGame, piece)
 }
 
 
-function getContactEnemyScore(thisGame, unit, piece, possibleMovePoint, terrainDefenseBonus, primaryTargetColors)
+function getContactEnemyScore(thisGame, unit, piece, possibleMovePoint, terrainDefenseBonus, primaryTargetColors, preboard = false)
 {
-    const randomVariance = Math.random() * 0.0125;
-    const hasAdjacent = hasAdjacentEnemyCivilization(thisGame, piece);
-    let score = hasAdjacent ? 0.70 + terrainDefenseBonus : 0.65 + terrainDefenseBonus;
-    score += randomVariance;
+    const adjacentEnemyCivs = findAdjacentEnemyCivs(thisGame, piece);
+    let hasPin = getHasPin(thisGame, adjacentEnemyCivs);
+    const newPinMultiplier = (hasPin && piece.units.length === 0) ? 1.25 : 1;
+    const bonus = terrainDefenseBonus * newPinMultiplier;
+    let score = hasPin ? 0.70 + bonus  : 0.65 + bonus;
     // If in an ideal seige location, value another less.
     if ((unit.piece.isMountain()) && hasAdjacentEnemyCivilization(thisGame, unit.piece))
     {
@@ -1577,7 +2012,7 @@ function getContactEnemyScore(thisGame, unit, piece, possibleMovePoint, terrainD
         } 
     }
     score *= isTargetPrimary? 1 : 0.6;
-    // Never leave cavalry alone in the open next to an enemy civ.
+    // Never send cavalry alone in the open next to an enemy civ.
     const remainingMoveAllowance = unit.movementAllowance - unit.spacesMoved;
     if (unit.isCavalry() && hasSmoothTerrain(piece) && (piece.countMilitaryUnits(piece.units) === 0) &&
         (possibleMovePoint.spacesNeeded === remainingMoveAllowance))
@@ -1587,16 +2022,20 @@ function getContactEnemyScore(thisGame, unit, piece, possibleMovePoint, terrainD
     // Maybe maneuver unit before attack.
     // If unit has extra moves close to a battle, pass through open terrain to get more attack vectors.
     const canManeuverBeforeAttack = (possibleMovePoint.spacesNeeded < remainingMoveAllowance && 
-        (unit.type === "c" || hasSmoothTerrain(piece)));
+        (unit.isCavalry() || hasSmoothTerrain(piece)));
     if (canManeuverBeforeAttack && hasAdjacentBattle(thisGame, piece)) 
     {
         const battlePiece = findAdjacentBattle(thisGame, piece);
         const attackVectors = battlePiece.collectRetreatIndices(thisGame.perspectiveColor);
-        if (!attackVectors.includes(piece.index))
+        if (!attackVectors.includes(piece.index) || (attackVectors.includes(unit.piece.index) && Math.random() < 0.4))
         {
-            window.isManeuveringToAttack = true;
-            window.movingToAttackIndex = battlePiece.index;
-            window.movingToAttackOrigin = piece.index;
+            if (!preboard)
+            {
+                unit.isManeuveringToAttack = true;
+                window.isManeuveringToAttack = true;
+                window.movingToAttackIndex = battlePiece.index;
+                window.movingToAttackOrigin = piece.index;
+            }
             return 1;
         }
     }
@@ -1613,6 +2052,8 @@ function getContactEnemyScore(thisGame, unit, piece, possibleMovePoint, terrainD
             score += adjacentHiddenCount * 0.02;
         }
     }
+    const randomVariance = Math.random() * 0.0125;
+    score += randomVariance;
     return score;
 }
 
@@ -1620,12 +2061,13 @@ function getContactEnemyScore(thisGame, unit, piece, possibleMovePoint, terrainD
 async function getCivilDefenseScore(thisGame, unit, piece, possibleMovePoint, terrainDefenseBonus, favorOffense) 
 {
     let score = 0;
-    const pinned = hasAdjacentEnemyArmy(thisGame, piece) || hasAdjacentEnemyFrigate(thisGame, piece);
+    const pinningArmy = hasAdjacentEnemyArmy(thisGame, piece);
+    const pinningNavy = hasAdjacentEnemyFrigate(thisGame, piece);
     const vulnerable = await isVulnerable(thisGame, piece);
-    if (vulnerable && (pinned || hasIsolatedForestCity(thisGame, piece)))
+    if (vulnerable && (pinningArmy || pinningNavy || hasIsolatedForestCity(thisGame, piece)))
     {
         const defendingRollCount = piece.numDefenderRolls(thisGame.perspectiveColor);
-        if (piece.hasCapital(thisGame.perspectiveColor) || (defendingRollCount < 3))
+        if (piece.hasCapital(thisGame.perspectiveColor) || (defendingRollCount < 3) || (pinningNavy && unit.isArtillery()))
         {
             score = 0.97;
         }
@@ -1650,11 +2092,11 @@ async function getCivilDefenseScore(thisGame, unit, piece, possibleMovePoint, te
 function hasIsolatedForestCity(thisGame, piece)
 {
     const color = thisGame.perspectiveColor;
-    return piece.isForest() && piece.hasCity(color) && !hasAdjacentArmy(thisGame, piece, color) && !piece.hasCapital(color);
+    return piece.isForest() && piece.hasCity(color) && !hasAdjacentFriendlyArmy(thisGame, piece, color) && !piece.hasCapital(color);
 }
 
 
-async function getBoardingFrigateScore(thisGame, unit, piece)
+async function getBoardingFrigateScore(thisGame, piece)
 {
     let score = 0;
     const frigates = findFrigates(thisGame, [thisGame.perspectiveColor], false, [piece]);
@@ -1702,32 +2144,29 @@ async function getBoardingFrigateScore(thisGame, unit, piece)
 
 async function getOpenCountrysideScore(thisGame, unit, piece, possibleMovePoint, terrainDefenseBonus)
 {
-    let score = 0;
-    const travelCostToEnemy = guessTravelCostToEnemy(thisGame, unit, piece);
-    const isEarlyGame = thisGame.maxMoveNumber < 25;
-    let distanceToCenter = null;
-    let centerWeight = 0;
-    if (isEarlyGame)
+    const travelCostToTarget = guessTravelCostToTarget(thisGame, unit, piece);
+    let score = (0.36 + terrainDefenseBonus) / (1 + travelCostToTarget);
+    let civSupportCount = 0;
+    const friendlyCivs = findAdjacentFriendlyCivs(thisGame, piece, unit.color);
+    for (const civ of friendlyCivs)
     {
-        distanceToCenter = getEuclideanDistanceToPoint(getCenterPieceBoardPoint(thisGame), piece.boardPoint.clone());
-        centerWeight = distanceToCenter * 0.25;  
-    }
-    if (await hasThreat(thisGame, piece))
-    {
-        score = (0.36 + terrainDefenseBonus) / (travelCostToEnemy + centerWeight);
-    }
-    else
-    {
-        score = 0.46 / (travelCostToEnemy + centerWeight);
+        if (await isVulnerable(thisGame, civ))
+        {
+            score += civSupportCount < 3 ? 0.16 : 0.02;
+            civSupportCount++;
+        }
     }
     const adjacentHiddenCount = countAdjacentHiddenTerrain(thisGame, piece); 
     if (adjacentHiddenCount)
     {
-        score += adjacentHiddenCount * 0.03;
+        let explorationMultiplier = score < 0.7 ? 0.06 : 0.02;
+        score += adjacentHiddenCount * explorationMultiplier;
     }
     // Special case - small board, first turn: 
     if (window.isSmallBoard)
     {
+        const playerCount = (thisGame.numberOfDistinctPlayers > 0) ? thisGame.numberOfDistinctPlayers : thisGame.teams.length;
+        const isEarlyGame = thisGame.maxMoveNumber < (12 * playerCount);
         const isFirstTurnMove = thisGame.pieces.getCivilizations(thisGame.perspectiveColor).length < 3;
         if (isEarlyGame && isFirstTurnMove) 
         {
@@ -1760,11 +2199,11 @@ function getFrigateMoveScore(thisGame, piece, unit, enemyColor, primaryTargetCol
     if (unit && unit.hasUnloadables())
     {
         // Loaded frigates should move toward enemy coastal towns.
-        const enemyCivs = thisGame.pieces.getOpponentCivilizations(thisGame.perspectiveColor);
+        const enemyCivs = window.enemyTargets;
         let coastalCivs = [];
         for (const civPiece of enemyCivs)
         {
-            if (isAccessibleNow(civPiece, unit, true, false) || (hasAdjacentDeepWater(thisGame, unit.piece)  && hasAdjacentDeepWater(thisGame, civPiece)))
+            if (isAccessibleNow(civPiece, unit, true, false) || (hasAdjacentDeepWater(thisGame, unit.piece) && hasAdjacentDeepWater(thisGame, civPiece)))
             {
                 coastalCivs.push(civPiece);
             }
@@ -1782,8 +2221,12 @@ function getFrigateMoveScore(thisGame, piece, unit, enemyColor, primaryTargetCol
         score += piece.hasBattle(thisGame.perspectiveColor, thisGame.player.team.rulerColor) ? 
             isAdjacent(thisGame, unit.piece.boardPoint, piece.boardPoint) ? 0.125 : 0.09375 : 0;
         score += piece.hasOpponentTown(thisGame.perspectiveColor) && !piece.isMountain() ? 0.0625 : 0;
-        score += piece.hasOpponentCivilization(thisGame.perspectiveColor) ? 0.03125 : 
-                piece.isMountain() ? 0.01875 : piece.isForest() ? 0.01125 : 0;
+        const hasEnemyCiv = piece.hasOpponentCivilization(thisGame.perspectiveColor);
+        score += hasEnemyCiv ? 0.03125 : piece.isMountain() ? 0.01875 : piece.isForest() ? 0.01125 : 0;
+        if (hasEnemyCiv)
+        {
+            score = (score + getCivAttackScore(thisGame, piece)) * 0.5;
+        }
     }
     else
     {
@@ -1876,29 +2319,19 @@ function guessDefensivePower(thisGame, piece, color = null)
 
 async function guessThreat(thisGame, piece, colors = null)
 {
-    // Add temporary pennants to simulate enemy terrain modifiers.
+    // Add pennants to sim enemy terrain modifiers.
     const enemyColors = colors === null ? getEnemyColors(thisGame) : colors;
-    let temporaryPennants = [];
-    for (const color of enemyColors)
-    {
-        if (color === thisGame.perspectiveColor)
-        {
-            continue;
-        }
-        for (const piece of thisGame.pieces)
-        {
-            if (hasRoughTerrain(piece) && piece.hasMilitary(color))
-            {
-                temporaryPennants.push(piece.addUnit(color, "p"));
-            }
-        }
-    }
-    let threat = guessArmyThreat(thisGame, piece, enemyColors);
+    let temporaryPennants = markTempPennants(thisGame, enemyColors);
+    let threat = {count: 0, frigateCount: 0, units : [], hasInfantry: false, hasCavalry : false, hasArtillery: false, hasAmphib : false, hasPin : false};
+    guessArmyThreat(thisGame, piece, enemyColors, threat);
     for (const pennant of temporaryPennants)
     {
         pennant.piece.removeUnit(pennant);
     }
-    const enemyFrigates = findFrigates(thisGame, enemyColors);
+    const loadedFirst = false;
+    const specificPieces = null;
+    const skipBattles = false;
+    const enemyFrigates = findFrigates(thisGame, enemyColors, loadedFirst, specificPieces, skipBattles);
     for (const frigate of enemyFrigates)
     {
         addPotentialCargoThreat(thisGame, piece, frigate, threat);  
@@ -1911,8 +2344,34 @@ async function guessThreat(thisGame, piece, colors = null)
     // Combine to estimate threat.
     const threatRollCount = guessRollCount(threat); 
     const rollScalar = 1.5;
-    const navalWeight = threat.hasAmphib ? threat.frigateCount * 0.5 : 0;
-    return ((threatRollCount * rollScalar) + threat.count + navalWeight);
+    const navalWeight = threat.hasAmphib ? threat.frigateCount * 0.6 : 0;
+    const artilleryWeight = threat.hasArtillery ? 0.4 : 0;
+    return ((threatRollCount * rollScalar) + threat.count + navalWeight + artilleryWeight);
+}
+
+
+function markTempPennants(thisGame, enemyColors)
+{
+    let temporaryPennants = [];
+    for (const color of enemyColors)
+    {
+        if (color === thisGame.perspectiveColor)
+        {
+            continue;
+        }
+        for (const piece of thisGame.pieces)
+        {
+            if (piece.hidden || piece.isDark) 
+            {
+                continue;
+            }
+            if (hasRoughTerrain(piece) && piece.hasMilitary(color))
+            {
+                temporaryPennants.push(piece.addUnit(color, "p"));
+            }
+        }
+    }
+    return temporaryPennants;
 }
 
 
@@ -1934,13 +2393,21 @@ function removeImaginaryCargo(frigate)
 }
 
 
-function guessArmyThreat(thisGame, piece, enemyColors)
+function guessArmyThreat(thisGame, piece, enemyColors, threat)
 {
-    let threat = {count: 0, frigateCount: 0, units : [], hasInfantry: false, hasCavalry : false, hasArtillery: false, hasAmphib : false, hasPin : false};
     let enemyArmyUnits = getArmyUnits(thisGame, enemyColors);
-    if (!enemyArmyUnits)
+    let expectedDarkUnits = guessDarkUnits(thisGame);
+    if (!enemyArmyUnits && !expectedDarkUnits.length)
     {
-        return threat;
+        return;
+    }
+    else if (enemyArmyUnits)
+    {
+        enemyArmyUnits = enemyArmyUnits.concat(expectedDarkUnits);
+    }
+    else 
+    {
+        enemyArmyUnits = expectedDarkUnits;
     }
     if (hasAdjacentEnemyArmy(thisGame, piece))
     {
@@ -1979,8 +2446,62 @@ function guessArmyThreat(thisGame, piece, enemyColors)
             }
         }
     }
-    return threat;
+    for (let unit of expectedDarkUnits)
+    {
+        unit.piece.removeUnit(unit);
+    }
 }
+
+
+function guessDarkUnits(thisGame)
+{
+    if (!thisGame.player.team.info.darkMemory)
+    {
+        return [];
+    }
+    let darkUnits = [];
+    for (const piece of thisGame.pieces)
+    {
+        if (!piece.hidden && piece.isDark)
+        {
+            const memUnits = thisGame.getMemoryUnits(piece.index);
+            if (memUnits.length)
+            {
+                let enemyColor = memUnits[0].color;
+                switch(piece.boardValue)
+                {
+                    case "g":
+                    {
+                        darkUnits.push(piece.addUnit(enemyColor, "c"));
+                        darkUnits.push(piece.addUnit(enemyColor, "i"));
+                        break;
+                    }
+                    case "m":
+                    {
+                        darkUnits.push(piece.addUnit(enemyColor, "a"));
+                        darkUnits.push(piece.addUnit(enemyColor, "i"));
+                        break;
+                    }
+                    case "f":
+                    {
+                        darkUnits.push(piece.addUnit(enemyColor, "i"));
+                        break;
+                    }
+                    case "p":
+                    {
+                        for (let i = 0; i < 3; i++)
+                        {
+                            darkUnits.push(piece.addUnit(enemyColor, "i"));
+                        }
+                        break;
+                    }
+                }
+            }    
+        }
+    }
+    return darkUnits;
+}
+
 
 
 function getInRangePoints(unit)  
@@ -2023,7 +2544,7 @@ function addPotentialCargoThreat(thisGame, targetPiece, frigate, knownThreat)
     }
     const maxCapacity = GamesByEmail.Viktory2Unit.CARGO_CAPACITY.f;
     let remainingCapacity = maxCapacity - cargoCount;
-    if (cargoCount >= maxCapacity || remainingCapacity <= 0)
+    if ((cargoCount >= maxCapacity) || (remainingCapacity <= 0))
     {
         return;
     }
@@ -2243,7 +2764,7 @@ async function decideMoveAcceptance(thisGame, unit, destinationIndex, isHoldingW
         if (defenderCount === 1)
         {
             const attackingToBreakSiege = (destinationPiece.hasRollingOpponent(thisGame.perspectiveColor) && isAdjacent(thisGame, unit.piece.boardPoint.clone(), destinationPiece.boardPoint.clone())) || window.movingToAttackIndex === destinationPiece.index;
-            if (attackingToBreakSiege && hasAdjacentSupport(thisGame, unit.piece) && hasWeakPin(thisGame, unit.piece))
+            if (attackingToBreakSiege && hasWeakPin(thisGame, unit.piece) && (hasAdjacentSupport(thisGame, unit.piece) || hasDualPinCounterAttack(thisGame, destinationPiece)))
             {
                 return true;
             }
@@ -2320,6 +2841,45 @@ function isLikelyGoingToFight(thisGame, destinationPiece)
 }
 
 
+function hasDualPinCounterAttack(thisGame, enemyPiece)
+{
+    let friendlySideCount = 0;
+    let friendlySideIndecies = [];
+    const adjacentPieceIndices = enemyPiece.getAdjacentIndecies(1);
+    for (const adjacentPieceIndex of adjacentPieceIndices)
+    {
+        let adjacentPiece = thisGame.pieces[adjacentPieceIndex];
+        if (adjacentPiece.getMilitaryUnitCount(thisGame.perspectiveColor))
+        {
+            for (const unit of adjacentPiece.units)
+            {
+                if (unit.isMilitary() && !unit.movementComplete && !unit.piece.hasBattle(thisGame.perspectiveColor, thisGame.player.team.color) && hasWeakPin(thisGame, unit.piece))
+                {
+                    friendlySideCount++;
+                    if (friendlySideCount > 1)
+                    {
+                        return true;
+                    }
+                    friendlySideIndecies.push(unit.piece.index);
+                    break;
+                }
+            }
+        }
+    }
+    if (enemyPiece.hasBattle(thisGame.perspectiveColor, thisGame.player.team.color))
+    {
+        const attackerOriginIndices = enemyPiece.collectRetreatIndices(thisGame.perspectiveColor);
+        for (const friendlySideIndex of friendlySideIndecies)
+        {
+            if (!attackerOriginIndices.includes(friendlySideIndex))
+            {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 
 async function decideFrigateMoveAcceptance(thisGame, frigate, destinationPiece)
 {
@@ -2337,8 +2897,10 @@ async function decideFrigateMoveAcceptance(thisGame, frigate, destinationPiece)
             return false;
         }
         // When a frigate pins an enemy town, only move for a battle or to another pin.
-        const pinsEnemyTown = hasAdjacentEnemyTown(thisGame, frigate.piece);
-        const movingToPin =  hasAdjacentEnemyTown(thisGame, destinationPiece);
+        const adjacentEnemyTowns = findAdjacentEnemyTowns(thisGame, frigate.piece); 
+        const pinsEnemyTown = getHasPin(thisGame, adjacentEnemyTowns);
+        const destinationAdjacentEnemyTowns = findAdjacentEnemyTowns(thisGame, destinationPiece); 
+        const movingToPin =  getHasPin(thisGame, destinationAdjacentEnemyTowns);
         const movingToBattle = hasAdjacentBattle(thisGame, destinationPiece);
         if (pinsEnemyTown && !movingToPin && !movingToBattle)
         {
@@ -2353,6 +2915,20 @@ async function decideFrigateMoveAcceptance(thisGame, frigate, destinationPiece)
         }
     }
     return true;
+}
+
+
+function getHasPin(thisGame, adjacentEnemyCivs)
+{
+    let hasPin = false;
+    for (const enemyCiv of adjacentEnemyCivs)
+    {
+        if (!enemyCiv.hasOpponentCapital(thisGame.perspectiveColor))
+        {
+            hasPin = true;
+        }
+    }
+    return hasPin;
 }
 
 
@@ -2384,9 +2960,9 @@ async function shouldPinnedInfantryHoldHighGround(thisGame, unit, isPinned, defe
 }
 
 
-function hasAdjacentSupport(thisGame, adjacentPiece)
+function hasAdjacentSupport(thisGame, piece)
 {
-    const adjacentPieceIndices = adjacentPiece.getAdjacentIndecies(1);
+    const adjacentPieceIndices = piece.getAdjacentIndecies(1);
     for (const adjacentPieceIndex of adjacentPieceIndices)
     {
         let adjacentPiece = thisGame.pieces[adjacentPieceIndex];
@@ -2567,7 +3143,8 @@ function fightBattle(thisGame, battlePiece, isReserveBattle = false)
             if (thisGame.pieces[battlePiece.index].hasArtillery(anyColor))
             {
                 playSound("battleArtillery");
-                if (firstRoll)
+                const hasOpponentMilitary = thisGame.pieces[battlePiece.index].hasNonRulingOpponentMilitary(thisGame.perspectiveColor, anyColor);
+                if (firstRoll && hasOpponentMilitary)
                 {
                     doPreBattle = true;
                 }
@@ -2608,7 +3185,6 @@ function fightBattle(thisGame, battlePiece, isReserveBattle = false)
                             {
                                 thisGame.pieces[battlePiece.index].battleOkClick(thisGame.player.team.color);
                             }
-                            window.waitCount = 0;
                             hideEndTurnButtons();
                             replaceBattleMessage(thisGame);
                             const reRollDelay = getTurbo(1200);
@@ -2666,6 +3242,7 @@ function fightBattle(thisGame, battlePiece, isReserveBattle = false)
                                         // After battle
                                         ensureMovementComplete(thisGame, piece.index);
                                         thisGame.update();
+                                        rankEnemyTargets(thisGame);
                                         const afterBattleDelay = 1000;
                                         setTimeout(function()
                                         {
@@ -2675,30 +3252,19 @@ function fightBattle(thisGame, battlePiece, isReserveBattle = false)
                                     }
                                 }
                             }, reRollDelay);
-                        } // No roll result, extremely rare but possible - try again or quit.
+                        } // No roll result - try again or quit.
                         else
                         {
                             setTimeout(function()
                             {
-                                window.waitCount++;
-                                if (window.waitCount > 2)
-                                {
-                                    komputerLog("Battle result missing. Will stop and reset.");
-                                    stopAndReset(true);
-                                    return;
-                                }
-                                handleRollResult();       
-                            }, 600);
+                                handleError("Battle result missing.");
+                            }, 200);
                         }
                     }
-                    // Game won. Reset for start.
+                    // Game won.
                     else
                     {
-                        playSound("win");
-                        thisGame.maxMoveNumber = 0;
-                        window.isKomputerReady = true;
-                        resetKomputerButtonStyle(true);
-                        komputerLog("Viktory.");
+                        handleWinState(thisGame);                        
                     }
                 }, battleReviewDelay);
             }, applyHitsDelay);
@@ -2929,13 +3495,12 @@ function settleCivExploredTerrain(thisGame, civBoardPoint)
         {
             const waterPopup = document.getElementById("Foundation_Elemental_" + GameVersion + "_waterSwap");
             const isEarlyGame = thisGame.maxMoveNumber < 16;
-            if ((waterPopup && isEarlyGame) || 
-                (waterPopup && (Math.random() < 0.2)))
+            const civPiece = thisGame.pieces.findAtPoint(civBoardPoint);
+            if ((waterPopup && isEarlyGame) || (waterPopup && (Math.random() < 0.2)))
             {
                 thisGame.swapWaterForLand();
                 komputerLog("Water swap!");
             }
-            const civPiece = thisGame.pieces.findAtPoint(civBoardPoint);
             if(window.isSmallBoard && (civPiece.index === 7 || civPiece.index === 36) ||
                 window.isLargeBoard && (civPiece.index === 9 || civPiece.index === 62))
             {
@@ -2982,13 +3547,16 @@ function endReservePhase(thisGame)
         thisGame.moveToNextPlayer();
         thisGame.sendMove();
     }
-    KomputerSound.bellsPlayedThisTurn = false;
+    const delay = thisGame.previewing ? getTurbo(400) : 1600;
     setTimeout(function()
     {
-        window.isKomputerReady = true;
-        resetKomputerButtonStyle(false);
-        komputerLog("Done.");
-    }, 200)
+        if (!playingNextTurn(thisGame))
+        {
+            window.isKomputerReady = true;
+            resetKomputerButtonStyle();
+            komputerLog("Done.");
+        };
+    }, delay)
 }
 
 
@@ -3202,7 +3770,7 @@ function getEarlyGameStrongPoint(thisGame, buildablePoints, currentCivCount, cur
     const friendlyTownPoints = thisGame.pieces.findAllWithUnitType(thisGame.perspectiveColor, "t")
     const friendlyCityPoints = thisGame.pieces.findAllWithUnitType(thisGame.perspectiveColor, "y")
     const friendlyCivPoints = (friendlyTownPoints || []).concat(friendlyCityPoints || []);
-    const centerPoint = getCenterPieceBoardPoint(thisGame);
+    const centerPoint = getCenterPiecePoint(thisGame);
     let minDistance = Number.MAX_VALUE;
     let strongPoint = null;
     let primaryTargetFound = false;
@@ -3571,7 +4139,8 @@ async function getBestLandReservable(thisGame, reservables)
 
 function findFirstTurnReservable(thisGame, reservables)
 {
-    const topCenterIndex = window.isSmallBoard ? 51 : thisGame.numberOfDistinctPlayers === 2 ? 79 : null;
+    const playerCount = (thisGame.numberOfDistinctPlayers > 0) ? thisGame.numberOfDistinctPlayers : thisGame.teams.length;
+    const topCenterIndex = window.isSmallBoard ? 51 : playerCount === 2 ? 79 : null;
     if (topCenterIndex)
     {
         const topCenterPoint =  thisGame.pieces[topCenterIndex].boardPoint;
@@ -3725,9 +4294,9 @@ async function maybeRecallTroops(thisGame)
         let armyUnits = getArmyUnits(thisGame, [thisGame.perspectiveColor]);
         if (armyUnits && armyUnits.length > 0)
         {
-            await counterGraveDanger(thisGame, armyUnits);
-            armyUnits = getArmyUnits(thisGame, [thisGame.perspectiveColor]);
             await counterThreats(thisGame, armyUnits);
+            armyUnits = getArmyUnits(thisGame, [thisGame.perspectiveColor]);
+            await counterGraveDanger(thisGame, armyUnits);
             recallSittingDuckCavalry(thisGame);
         }
     }
@@ -3772,9 +4341,9 @@ function recallSittingDuckCavalry(thisGame)
                         }
                         else
                         {
-                            console.warn("Cavalry recall failed. Logging unit and target point.");
-                            console.log(unit);
-                            console.log(reservablePoint);
+                            komputerLog("Cavalry recall failed. Logging unit and target point.");
+                            komputerLog(unit);
+                            komputerLog(reservablePoint);
                         }
                         break;
                     }
@@ -3820,7 +4389,7 @@ async function counterGraveDanger(thisGame, armyUnits)
     for (let unitIndex = 0; unitIndex < recallUnits.length; unitIndex++)
     {
         const unit = recallUnits[unitIndex];
-        if (isLoneCivDefender(thisGame, unit) && await hasThreat(thisGame, unit.piece))
+        if (isLoneCivDefender(thisGame, unit) && (hasDarkFrontierTown(thisGame, unit.piece) || await hasThreat(thisGame, unit.piece)))
         {
             continue;
         }
@@ -3842,7 +4411,7 @@ async function counterGraveDanger(thisGame, armyUnits)
                     }
                     else
                     {
-                        console.warn("Troop recall failed. Will log unit and target point.");
+                        komputerLog("Troop recall failed. Will log unit and target point.");
                         komputerLog(unit);
                         komputerLog(reservablePoint);
                     }
@@ -3852,6 +4421,33 @@ async function counterGraveDanger(thisGame, armyUnits)
         }
     }
 }
+
+
+function hasDarkFrontierTown(thisGame, civPiece)
+{
+    if (civPiece.hasCity(thisGame.perspectiveColor))
+    {
+        return false;
+    }
+    const homePoints = thisGame.getCapitalPoints(thisGame.info.board, thisGame.perspectiveColor, thisGame.playOptions, false);
+    for (const point of homePoints)
+    {
+        if (civPiece.boardPoint.equals(point))
+        {
+            return false;
+        }
+    }
+    const adjacentIndecies = civPiece.getAdjacentIndecies(2);
+    for (const adjacentIndex of adjacentIndecies)
+    { 
+        let adjacentPiece = thisGame.pieces[adjacentIndex];
+        if (adjacentPiece.isDark && !thisGame.getMemoryUnits(adjacentPiece.index).length)
+        {
+            return true;
+        }
+    }
+}
+
 
 
 async function counterThreats(thisGame, armyUnits)
@@ -3895,9 +4491,9 @@ async function counterThreats(thisGame, armyUnits)
                     }
                     else
                     {
-                        console.komputerLog("Troop recall failed. Logging unit and target point.");
-                        console.log(unit);
-                        console.log(reservablePoint);
+                        komputerLog("Troop recall failed. Logging unit and target point.");
+                        komputerLog(unit);
+                        komputerLog(reservablePoint);
                     }
                     break;
                 }
@@ -4108,7 +4704,7 @@ function decideBestFrigateRecallPoint(thisGame, targetPoints)
         targetPoint.score = countAdjacentCivilizations(thisGame, targetPiece);
         targetPoint.score += hasAdjacentEnemyTown(thisGame, targetPiece) ? 0.25 : 0;
         targetPoint.score += hasAdjacentEnemyCivilization(thisGame, targetPiece) ? 0.25 : 0;
-        targetPoint.score += hasAdjacentArmy(thisGame, targetPiece) ? 0.25 : 0;
+        targetPoint.score += hasAdjacentFriendlyArmy(thisGame, targetPiece, thisGame.perspectiveColor) ? 0.25 : 0;
         targetPoint.score -= isAccessibleByEnemyFrigate(thisGame, targetPiece) ? 0.5 : 0;
         targetPoint.score -= hasAdjacentEnemyArtillery(thisGame, targetPiece) ? 0.25 : 0;
         if (targetPoint.score > bestScore)
@@ -4141,7 +4737,8 @@ function isAccessibleByEnemyFrigate(thisGame, piece)
 // Highly specific instructions for the first two turns
 function placeCapital(thisGame)
 {
-    thisGame.maxMoveNumber = thisGame.maxMoveNumber < 4 * thisGame.numberOfDistinctPlayers ? thisGame.maxMoveNumber : 0;
+    const playerCount = (thisGame.numberOfDistinctPlayers > 0) ? thisGame.numberOfDistinctPlayers : thisGame.teams.length;
+    thisGame.maxMoveNumber = thisGame.maxMoveNumber < (4 * playerCount) ? thisGame.maxMoveNumber : 0;
     const isFirstPlayer = thisGame.perspectiveColor === 0;
     const pieceIndexStandardChoices = getCommonInitialChoices(thisGame);
     let pieceIndex = pieceIndexStandardChoices ? isFirstPlayer ? getFirstCapitalPieceIndex(thisGame, [...pieceIndexStandardChoices]) : getNextCapitalPieceIndex(thisGame, [...pieceIndexStandardChoices]) : null;
@@ -4164,8 +4761,8 @@ function placeCapital(thisGame)
     setTimeout(function(){
         thisGame.playOptions.mapCustomizationData = decideInitialHexOrder(hexOrder, pieceIndex, pieceIndexStandardChoices);
         // Decide capital location.
-        const shortDelay = 400;
-        const longDelay = 700;
+        const shortDelay = getTurbo(400);
+        const longDelay = getTurbo(700);
         setTimeout(function(){
             thisGame.customizeMapDoAll(true);        
             // Place capital & commit. 
@@ -4212,19 +4809,23 @@ function placeCapital(thisGame)
                     if (!hasReserveUnit)
                     {
                         thisGame.endMyTurn();
+                        const endTurnDelay = thisGame.previewing ? getTurbo(300) : 1600;
                         setTimeout(function()
                         {
-                            window.isKomputerReady = true;
-                            resetKomputerButtonStyle();
-                            komputerLog("Done.");
-                        }, 200);
+                            if (!playingNextTurn(thisGame))
+                            {
+                                window.isKomputerReady = true;
+                                resetKomputerButtonStyle();
+                                komputerLog("Done.");
+                            };
+                        }, endTurnDelay);
                     }
                     // Player places additional town based on specific data. Later reserve phases use other guidance.
                     else
                     {
                         if (thisGame.movePhase === 11)
                         {
-                            if (thisGame.numberOfDistinctPlayers < 4)
+                            if (playerCount < 4)
                             {
                                 let element = document.querySelector("#Foundation_Elemental_" + GameVersion + "_reserve_0");
                                 thisGame.reserveOnMouseDown(null, thisGame.event("reserveOnMouseDown(this,event,#)"), 0);
@@ -4239,9 +4840,16 @@ function placeCapital(thisGame)
                                     if (pieceIndex === null)
                                     {
                                         thisGame.endMyTurn();
-                                        window.isKomputerReady = true;
-                                        resetKomputerButtonStyle();
-                                        komputerLog("Done.");
+                                        const endTurnDelay = thisGame.previewing ? getTurbo(300) : 1600;
+                                        setTimeout(function()
+                                        {
+                                            if (!playingNextTurn(thisGame))
+                                            {
+                                                window.isKomputerReady = true;
+                                                resetKomputerButtonStyle();
+                                                komputerLog("Done.");
+                                            }
+                                        }, endTurnDelay)
                                     }
                                 }
                                 let destinationPiece = thisGame.pieces[pieceIndex];
@@ -4262,11 +4870,16 @@ function placeCapital(thisGame)
                                         thisGame.reserveOnMouseDown(element, thisGame.event("reserveOnMouseDown(this,event,#)"), 0);
                                         thisGame.placeReserveOnMouseUp( destinationScreenPoint );
                                         thisGame.endMyTurn();
-                                        setTimeout(function(){
-                                            window.isKomputerReady = true;
-                                            resetKomputerButtonStyle();
-                                            komputerLog("Done.");
-                                        }, shortDelay)
+                                        const endTurnDelay = thisGame.previewing ? getTurbo(shortDelay) : 1600;
+                                        setTimeout(function()
+                                        {
+                                            if (!playingNextTurn(thisGame))
+                                            {
+                                                window.isKomputerReady = true;
+                                                resetKomputerButtonStyle();
+                                                komputerLog("Done.");
+                                            }
+                                        }, endTurnDelay)
                                     }, shortDelay)
                                 }, longDelay);
                             } // More than 3 players
@@ -4278,7 +4891,7 @@ function placeCapital(thisGame)
                     }}, longDelay);
                 }, shortDelay);
         }, shortDelay);
-    }, 1000)
+    }, getTurbo(1000))
 }
 
 
@@ -4352,7 +4965,7 @@ function getCommonInitialChoices(thisGame)
     {
         return null;
     }
-    const playerCount = thisGame.numberOfDistinctPlayers;
+    const playerCount = (thisGame.numberOfDistinctPlayers > 0) ? thisGame.numberOfDistinctPlayers : thisGame.teams.length;
     if (playerCount > 3 && playerCount !== 6)
     {
         if (playerCount === 8 && thisGame.perspectiveColor === 0)
@@ -4718,6 +5331,73 @@ function findAdjacentFriendlyCivs(thisGame, piece, color = null)
 }
 
 
+function findAdjacentEnemyCivs(thisGame, piece)
+{
+    let adjacentCivs = [];
+    const adjacentIndecies = piece.getAdjacentIndecies(1);
+    for (const adjacentIndex of adjacentIndecies)
+    {
+        const adjacentPiece = thisGame.pieces[adjacentIndex];
+        if (!adjacentPiece || adjacentPiece.hidden || (adjacentPiece.isDark && !thisGame.getMemoryUnits(adjacentPiece.index).length))
+        {
+            continue;
+        }
+        if (adjacentPiece.hasOpponentCivilization(thisGame.perspectiveColor))
+        {
+            adjacentCivs.push(adjacentPiece);
+        }
+    }
+    return adjacentCivs;
+}
+
+
+function findAdjacentEnemyTowns(thisGame, piece)
+{
+    let adjacentTowns = [];
+    const adjacentIndecies = piece.getAdjacentIndecies(1);
+    for (const adjacentIndex of adjacentIndecies)
+    {
+        const adjacentPiece = thisGame.pieces[adjacentIndex];
+        if (!adjacentPiece || adjacentPiece.hidden || (adjacentPiece.isDark && !thisGame.getMemoryUnits(adjacentPiece.index).length))
+        {
+            continue;
+        }
+        if (adjacentPiece.hasOpponentTown(thisGame.perspectiveColor))
+        {
+            adjacentTowns.push(adjacentPiece);
+        }
+    }
+    return adjacentTowns;
+}
+
+
+function findAdjacentFriendlyArmies(thisGame, piece, color = null)
+{
+    if (color === null)
+    {
+        color = thisGame.perspectiveColor;
+    }
+    let friendlyArmies = [];
+    const adjacentIndecies = piece.getAdjacentIndecies(1);
+    for (const adjacentIndex of adjacentIndecies)
+    {
+        const adjacentPiece = thisGame.pieces[adjacentIndex];
+        if (!adjacentPiece)
+        {
+            continue;
+        }
+        for (const unit of adjacentPiece.units)
+        {
+            if (unit.color === color && ( unit.isInfantry() || unit.isArtillery() || unit.isCavalry() ))
+            {
+                friendlyArmies.push(unit);
+            }
+        }        
+    }
+    return friendlyArmies;    
+}
+
+
 function countAdjacentFriendlyArmy(thisGame, piece, color = null)
 {
     if (color === null)
@@ -4848,24 +5528,36 @@ function countUnit(piece, type)
 function hasAdjacentEnemyCivilization(thisGame, piece)
 {
     let adjacentPiece;
-    return ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y)) != null && adjacentPiece.hasOpponentCivilization(thisGame.perspectiveColor)) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y)) != null && adjacentPiece.hasOpponentCivilization(thisGame.perspectiveColor)) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y-1)) != null && adjacentPiece.hasOpponentCivilization(thisGame.perspectiveColor)) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y+1)) != null && adjacentPiece.hasOpponentCivilization(thisGame.perspectiveColor)) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y-1)) != null && adjacentPiece.hasOpponentCivilization(thisGame.perspectiveColor)) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y+1)) != null && adjacentPiece.hasOpponentCivilization(thisGame.perspectiveColor));
+    return ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y)) != null && adjacentPiece.hasOpponentCivilization(thisGame.perspectiveColor) && !adjacentPiece.hidden) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y)) != null && adjacentPiece.hasOpponentCivilization(thisGame.perspectiveColor) && !adjacentPiece.hidden) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y-1)) != null && adjacentPiece.hasOpponentCivilization(thisGame.perspectiveColor) && !adjacentPiece.hidden) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y+1)) != null && adjacentPiece.hasOpponentCivilization(thisGame.perspectiveColor) && !adjacentPiece.hidden) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y-1)) != null && adjacentPiece.hasOpponentCivilization(thisGame.perspectiveColor) && !adjacentPiece.hidden) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y+1)) != null && adjacentPiece.hasOpponentCivilization(thisGame.perspectiveColor) && !adjacentPiece.hidden);
+}
+
+
+function findAdjacentEnemyCivilization(thisGame, piece)
+{
+    let adjacentPiece;
+    return ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y)) != null && adjacentPiece.hasOpponentCivilization(thisGame.perspectiveColor) && !adjacentPiece.hidden) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y)) != null && adjacentPiece.hasOpponentCivilization(thisGame.perspectiveColor) && !adjacentPiece.hidden) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y-1)) != null && adjacentPiece.hasOpponentCivilization(thisGame.perspectiveColor) && !adjacentPiece.hidden) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y+1)) != null && adjacentPiece.hasOpponentCivilization(thisGame.perspectiveColor) && !adjacentPiece.hidden) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y-1)) != null && adjacentPiece.hasOpponentCivilization(thisGame.perspectiveColor) && !adjacentPiece.hidden) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y+1)) != null && adjacentPiece.hasOpponentCivilization(thisGame.perspectiveColor) && !adjacentPiece.hidden) ? adjacentPiece : null;
 }
 
 
 function hasAdjacentEnemyTown(thisGame, piece)
 {
     let adjacentPiece;
-    return ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y)) != null && adjacentPiece.hasOpponentTown(thisGame.perspectiveColor)) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y)) != null && adjacentPiece.hasOpponentTown(thisGame.perspectiveColor)) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y-1)) != null && adjacentPiece.hasOpponentTown(thisGame.perspectiveColor)) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y+1)) != null && adjacentPiece.hasOpponentTown(thisGame.perspectiveColor)) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y-1)) != null && adjacentPiece.hasOpponentTown(thisGame.perspectiveColor)) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y+1)) != null && adjacentPiece.hasOpponentTown(thisGame.perspectiveColor));
+    return ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y)) != null && adjacentPiece.hasOpponentTown(thisGame.perspectiveColor) && !adjacentPiece.hidden) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y)) != null && adjacentPiece.hasOpponentTown(thisGame.perspectiveColor) && !adjacentPiece.hidden) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y-1)) != null && adjacentPiece.hasOpponentTown(thisGame.perspectiveColor) && !adjacentPiece.hidden) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y+1)) != null && adjacentPiece.hasOpponentTown(thisGame.perspectiveColor) && !adjacentPiece.hidden) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y-1)) != null && adjacentPiece.hasOpponentTown(thisGame.perspectiveColor) && !adjacentPiece.hidden) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y+1)) != null && adjacentPiece.hasOpponentTown(thisGame.perspectiveColor) && !adjacentPiece.hidden);
 }
 
 
@@ -4928,7 +5620,7 @@ function countAdjacentHiddenTerrain(thisGame, piece)
     for (const adjacentIndex of adjacentIndecies)
     {
         const adjacentPiece = thisGame.pieces[adjacentIndex];
-        const isHidden =  (adjacentPiece && adjacentPiece.hidden);
+        const isHidden = (adjacentPiece && adjacentPiece.hidden);
         if (isHidden)
         {
             hiddenCount++;
@@ -4951,43 +5643,82 @@ function hasVerticalWaterway(thisGame, piece)
 }
 
 
-function isAccessibleNow(piece, unit, viaCargo = false, allowFrigateBattle = true)
+function isAccessibleNow(piece, unit, viaCargo = false, allowFrigateBattle = true, loadData = null)
 {
-    if (piece && unit)
+    if (!piece || !unit)
     {
-        let unitMovablePoints = [];
-        if (unit.isFrigate() && viaCargo)
+        return false;
+    }
+    let unitMovablePoints = [];
+    if (unit.isFrigate() && viaCargo)
+    {
+        const hasCargo = unit.cargo.length > 0;
+        maybeAddImaginaryCargo(unit, hasCargo);
+        unitMovablePoints = getFrigateMovables(unit);
+        removeImaginaryCargo(unit);
+    }
+    else
+    {
+        unitMovablePoints = unit.getMovables();
+    }
+    if (unitMovablePoints && unitMovablePoints.length)
+    {
+        for (const targetPoint of unitMovablePoints)
         {
-            const hasCargo = unit.cargo.length > 0;
-            maybeAddImaginaryCargo(unit, hasCargo);
-            unitMovablePoints = getFrigateMovables(unit);
-            removeImaginaryCargo(unit);
-        }
-        else
-        {
-            unitMovablePoints = unit.getMovables();
-        }
-        if (unitMovablePoints && unitMovablePoints.length)
-        {
-            for (const point of unitMovablePoints)
+            if (!targetPoint.equals(piece.boardPoint))
             {
-                if (point.x === piece.boardPoint.x && point.y === piece.boardPoint.y)
+                continue;
+            }
+            if (allowFrigateBattle)
+            {
+                if (loadData)
                 {
-                    if (allowFrigateBattle)
+                    loadData.index = targetPoint.retreatIndex; 
+                    loadData.spacesNeeded = targetPoint.spacesNeeded;
+                    loadData.possibleMoves = unitMovablePoints;
+                }
+                return true;
+            }
+            else
+            {
+                const unloadingPiece = piece.pieces[targetPoint.retreatIndex];
+                if (!unloadingPiece.hasOpponentUnit(unit.color, "f"))
+                {
+                    if (loadData)
                     {
-                        return true;
+                        loadData.index = targetPoint.retreatIndex; 
+                        loadData.spacesNeeded = targetPoint.spacesNeeded;
+                        loadData.possibleMoves = unitMovablePoints;
                     }
-                    else
+                    return true;
+                }
+                else
+                {
+                    const alternatePoints = unit.getMovables();
+                    for (const alternatePoint of alternatePoints)
                     {
-                        const unloadingPiece = piece.pieces[point.retreatIndex];
-                        const currentColor = piece.pieces.game.perspectiveColor;
-                        if (!unloadingPiece.hasOpponentUnit(currentColor, "f"))
+                        if (alternatePoint.index === unloadingPiece.index)
                         {
+                            continue;
+                        }
+                        const altUnloadingPiece = piece.pieces[alternatePoint.index];
+                        if (altUnloadingPiece.hasOpponentUnit(unit.color, "f"))
+                        {
+                            continue;
+                        }
+                        if (piece.pieces.game.distanceBewteenPoints(targetPoint, alternatePoint) === 1)
+                        {
+                            if (loadData)
+                            {
+                                loadData.index = altUnloadingPiece.index; 
+                                loadData.spacesNeeded = alternatePoint.spacesNeeded;
+                                loadData.possibleMoves = alternatePoints;
+                            }
                             return true;
                         }
                     }
                 }
-            }
+            }                
         }
     }
     return false;
@@ -5038,57 +5769,53 @@ function hasAdjacentFrigate(thisGame, piece, color)
         color = thisGame.perspectiveColor;
     }
     let adjacentPiece;
-    return ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y)) != null && adjacentPiece.hasFrigate(color)) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y)) != null && adjacentPiece.hasFrigate(color)) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y-1)) != null && adjacentPiece.hasFrigate(color)) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y+1)) != null && adjacentPiece.hasFrigate(color)) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y-1)) != null && adjacentPiece.hasFrigate(color)) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y+1)) != null && adjacentPiece.hasFrigate(color));
+    return ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y)) != null && adjacentPiece.hasFrigate(color) && !adjacentPiece.hidden) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y)) != null && adjacentPiece.hasFrigate(color) && !adjacentPiece.hidden) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y-1)) != null && adjacentPiece.hasFrigate(color) && !adjacentPiece.hidden) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y+1)) != null && adjacentPiece.hasFrigate(color) && !adjacentPiece.hidden) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y-1)) != null && adjacentPiece.hasFrigate(color) && !adjacentPiece.hidden) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y+1)) != null && adjacentPiece.hasFrigate(color) && !adjacentPiece.hidden);
 }
 
 
 function hasAdjacentEnemyFrigate(thisGame, piece)
 {
     let adjacentPiece;
-    return ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y)) != null && adjacentPiece.hasOpponentUnit(thisGame.perspectiveColor,"f")) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y)) != null && adjacentPiece.hasOpponentUnit(thisGame.perspectiveColor,"f")) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y-1)) != null && adjacentPiece.hasOpponentUnit(thisGame.perspectiveColor,"f")) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y+1)) != null && adjacentPiece.hasOpponentUnit(thisGame.perspectiveColor,"f")) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y-1)) != null && adjacentPiece.hasOpponentUnit(thisGame.perspectiveColor,"f")) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y+1)) != null && adjacentPiece.hasOpponentUnit(thisGame.perspectiveColor,"f"));
+    return ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y)) != null && adjacentPiece.hasOpponentUnit(thisGame.perspectiveColor,"f") && !adjacentPiece.hidden) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y)) != null && adjacentPiece.hasOpponentUnit(thisGame.perspectiveColor,"f") && !adjacentPiece.hidden) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y-1)) != null && adjacentPiece.hasOpponentUnit(thisGame.perspectiveColor,"f") && !adjacentPiece.hidden) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y+1)) != null && adjacentPiece.hasOpponentUnit(thisGame.perspectiveColor,"f") && !adjacentPiece.hidden) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y-1)) != null && adjacentPiece.hasOpponentUnit(thisGame.perspectiveColor,"f") && !adjacentPiece.hidden) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y+1)) != null && adjacentPiece.hasOpponentUnit(thisGame.perspectiveColor,"f") && !adjacentPiece.hidden);
 }
 
 
 function hasAdjacentEnemyArtillery(thisGame, piece)
 {
     let adjacentPiece;
-    return ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y)) != null && adjacentPiece.hasOpponentUnit(thisGame.perspectiveColor,"a")) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y)) != null && adjacentPiece.hasOpponentUnit(thisGame.perspectiveColor,"a")) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y-1)) != null && adjacentPiece.hasOpponentUnit(thisGame.perspectiveColor,"a")) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y+1)) != null && adjacentPiece.hasOpponentUnit(thisGame.perspectiveColor,"a")) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y-1)) != null && adjacentPiece.hasOpponentUnit(thisGame.perspectiveColor,"a")) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y+1)) != null && adjacentPiece.hasOpponentUnit(thisGame.perspectiveColor,"a"));
+    return ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y)) != null && adjacentPiece.hasOpponentUnit(thisGame.perspectiveColor,"a") && !adjacentPiece.hidden) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y)) != null && adjacentPiece.hasOpponentUnit(thisGame.perspectiveColor,"a") && !adjacentPiece.hidden) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y-1)) != null && adjacentPiece.hasOpponentUnit(thisGame.perspectiveColor,"a") && !adjacentPiece.hidden) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y+1)) != null && adjacentPiece.hasOpponentUnit(thisGame.perspectiveColor,"a") && !adjacentPiece.hidden) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y-1)) != null && adjacentPiece.hasOpponentUnit(thisGame.perspectiveColor,"a") && !adjacentPiece.hidden) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y+1)) != null && adjacentPiece.hasOpponentUnit(thisGame.perspectiveColor,"a") && !adjacentPiece.hidden);
 }
 
 
 function hasAdjacentEnemyArmy(thisGame, piece)
 {
     let adjacentPiece;
-    return ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y)) != null && hasEnemyArmy(thisGame, adjacentPiece)) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y)) != null && hasEnemyArmy(thisGame, adjacentPiece)) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y-1)) != null && hasEnemyArmy(thisGame, adjacentPiece)) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y+1)) != null && hasEnemyArmy(thisGame, adjacentPiece)) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y-1)) != null && hasEnemyArmy(thisGame, adjacentPiece)) ||
-        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y+1)) != null && hasEnemyArmy(thisGame, adjacentPiece));
+    return ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y)) != null && hasEnemyArmy(thisGame, adjacentPiece) && !adjacentPiece.hidden) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y)) != null && hasEnemyArmy(thisGame, adjacentPiece) && !adjacentPiece.hidden) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y-1)) != null && hasEnemyArmy(thisGame, adjacentPiece) && !adjacentPiece.hidden) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x, piece.boardPoint.y+1)) != null && hasEnemyArmy(thisGame, adjacentPiece) && !adjacentPiece.hidden) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y-1)) != null && hasEnemyArmy(thisGame, adjacentPiece) && !adjacentPiece.hidden) ||
+        ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y+1)) != null && hasEnemyArmy(thisGame, adjacentPiece) && !adjacentPiece.hidden);
 }
 
 
-function hasAdjacentArmy(thisGame, piece, color)
+function hasAdjacentFriendlyArmy(thisGame, piece, color)
 {
-    if (typeof(color) === "undefined")
-    {
-        color = thisGame.perspectiveColor;
-    } 
     let adjacentPiece;
     return ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x-1, piece.boardPoint.y)) != null && hasArmy(adjacentPiece, color)) ||
         ((adjacentPiece = thisGame.pieces.findAtXY(piece.boardPoint.x+1, piece.boardPoint.y)) != null && hasArmy(adjacentPiece, color)) ||
@@ -5117,7 +5844,7 @@ function getArmyUnits(thisGame, colors)
     for (const piece of thisGame.pieces)
     {
         const reserveIndex = -1;
-        if (piece.isWater() || piece.valueIndex === reserveIndex)
+        if (piece.hidden || piece.isDark || piece.isWater() || piece.valueIndex === reserveIndex)
         {
             continue;
         }
@@ -5647,6 +6374,36 @@ function patchUnitPrototype()
             }
         }
     }
+
+    GamesByEmail.Viktory2Unit.prototype.addLandMovables = function (movables,x,y,allowance,distance,retreatIndex)
+    {
+      var piece=this.piece.pieces.findAtXY(x,y);
+      if (piece && !piece.hidden && allowance>piece.bestAllowance && piece.isLand())
+      {
+         if (distance>0)
+            piece.pushMoveable(movables,this.color,this.rulerColor,distance,retreatIndex);
+         retreatIndex=piece.index;
+         piece.bestAllowance=allowance;
+         if (allowance>0 &&
+             piece.allAdjacentsVisible() &&
+             !piece.hasRollingEnemy(this.color,this.rulerColor) &&
+             (distance==0 || this.ignoresSlowTerrain() || !piece.isSlowTerrain(this.color,this.rulerColor)))
+         {
+            allowance--;
+            distance++;
+            var roads= piece.getRoadsOut(this.color,this.rulerColor,allowance);  
+            for (var i=0;i<roads.length;i++)
+               this.addLandMovables(movables,roads[i].x,roads[i].y,allowance,distance,retreatIndex);
+            this.addLandMovables(movables,x-1,y,allowance,distance,retreatIndex);
+            this.addLandMovables(movables,x+1,y,allowance,distance,retreatIndex);
+            this.addLandMovables(movables,x,y-1,allowance,distance,retreatIndex);
+            this.addLandMovables(movables,x,y+1,allowance,distance,retreatIndex);
+            this.addLandMovables(movables,x-1,y-1,allowance,distance,retreatIndex);
+            this.addLandMovables(movables,x+1,y+1,allowance,distance,retreatIndex);
+            recycleArray(roads);
+         }
+      }
+   }
 }
 
 
@@ -5657,7 +6414,8 @@ function patchPiecesPrototype(thisGame)
         if (window.KomputerNations.isActive)
         {
             const menuOptions = window.KomputerNations.menuOptions;
-            const maxNationCount = thisGame.numberOfDistinctPlayers;
+            const playerCount = (thisGame.numberOfDistinctPlayers > 0) ? thisGame.numberOfDistinctPlayers : thisGame.teams.length;
+            const maxNationCount = playerCount;
             for (let color = 0; color < maxNationCount; color++)
             {
                 const selector = document.getElementById("NationSelector_" + color);
@@ -5686,8 +6444,38 @@ function patchPiecesPrototype(thisGame)
 }
 
 
+function getReusableArray()
+{
+    return window.Komputer.arrayPool.length ? Komputer.arrayPool.pop() : [];
+}
+
+function recycleArray(target)
+{
+    if (!target || !target.length)
+    {
+        return;
+    }
+    target.length = 0;
+    window.Komputer.arrayPool.push(target);
+}
+
+
 function patchPiecePrototype()
 {
+    GamesByEmail.Viktory2Piece.prototype.getRoadsOut = function(color,rulerColor,allowance)
+    {
+      var roads= getReusableArray(); 
+      if (this.hasAllianceCivilization(color,rulerColor))
+      {
+         var civs=this.pieces.getAllianceCivilizations(color,rulerColor);
+         for (var i=0;i<civs.length;i++)
+            if (allowance>civs[i].bestAllowance &&
+                this.minDistanceTo(civs[i],3,true,true,color,rulerColor)>0)
+               roads.push(civs[i].boardPoint);
+      }
+      return roads;
+    }
+
     // Patch for nation sprites: add color mask when adding new units.
     GamesByEmail.Viktory2Piece.prototype.addUnit = function(color,type)
     {
@@ -5969,6 +6757,7 @@ function hidePrimaryControls()
     let soundToggleLabel = document.getElementById("SoundToggleLabel_" + GameVersion);
     let turboToggle = document.getElementById("TurboToggle_" + GameVersion);
     let turboToggleLabel = document.getElementById("TurboToggleLabel_" + GameVersion);
+    let komputerOptions = document.getElementById("KomputerOptions");
     runButton.style.visibility = "hidden"; 
     stopButton.style.visibility = "hidden";
     darkModeToggle.style.visibility = "hidden"; 
@@ -5977,6 +6766,7 @@ function hidePrimaryControls()
     soundToggleLabel.style.visibility = "hidden";
     turboToggle.style.visibility = "hidden";
     turboToggleLabel.style.visibility = "hidden";
+    komputerOptions.style.visibility = "hidden";
 }
 
 
@@ -5986,7 +6776,7 @@ function patchGamePrototype(thisGame)
     GamesByEmail.Viktory2Game.prototype.startAnotherGame = function()
     {
        disableGameEditor();
-       disableNations(this);
+       disableNations();
        var formLoader=new Foundation.ClientLoader();
        formLoader.readyToProcess=new Function(this.event("showStartAnotherGameForm(null)"));
        formLoader.receiveScriptList([{test:"typeof(GamesByEmail.GameForm)=='undefined'",src:this.getCodeFolder()+"GamesByEmail.GameForm.js?"+(new Date()).valueOf()},
@@ -6611,7 +7401,7 @@ function patchGamePrototype(thisGame)
    {
       let possibleWinner;
       for (let i=0;i<this.teams.length;i++)
-         if (this.teams[i].status.inPlay &&
+         if ((this.teams[i].status.inPlay || this.teams[i].status.won) &&
              !this.teams[i].status.resigned &&
              this.teams[i].rulerColor<0)
          {
@@ -6633,12 +7423,7 @@ function patchGamePrototype(thisGame)
          if (committing)
         {
             this.setEnded(possibleWinner);
-            if (window.isKomputerReady)
-            {
-                playSound("win");
-                komputerLog("Viktory.");
-                setTimeout(function(){ resetKomputerButtonStyle(true) }, 200);
-            }
+            setTimeout( function(){ handleWinState() }, 200 );
         }
          return true;
       }
@@ -6669,7 +7454,6 @@ function patchGamePrototype(thisGame)
          return this.moveToNextPlayer();
       return true;
    }
-
    // End patch for GamesByEmail.Viktory2Game.prototype.
 }
 
@@ -6754,6 +7538,7 @@ function addDarkModeToggle()
     document.body.appendChild(toggle);
     // Toggle Label
     let toggleLabel = document.createElement("label");
+    makeNonSelectable(toggleLabel);
     toggleLabel.id = "DarkModeLabel_" + GameVersion;
     toggleLabel.htmlFor = "DarkModeToggle_" + GameVersion;
     toggleLabel.innerText = "Dark";  
@@ -6768,7 +7553,7 @@ function getRunButtonTop()
     const teamTitlesTop = window.scrollY + document.getElementById('Foundation_Elemental_' + GameVersion + '_bottomTeamTitles').getBoundingClientRect().top;
     if (window.isExtraLargeBoard)
     {
-        return teamTitlesTop - 60;
+        return teamTitlesTop - 71;
     }
     return teamTitlesTop;
 }
@@ -6826,6 +7611,7 @@ function stopKomputerClick()
 {
     window.stopKomputer = true;
     styleButtonForStop();
+    styleBoardForStop();
     setTimeout(function(){
         if (window.stopKomputer === true)
         {
@@ -6837,10 +7623,14 @@ function stopKomputerClick()
 }
 
 
-function getErrorMessage()
+function getErrorMessage(verbose = false)
 {
-    return "Force Stop. Possibly no error. Error thrown in case of undetected infinite loop. \
-The Stop Button was pressed when it appears the Komputer was not running. \
+    const shortMessage = "Force Stop.";
+    if (!verbose)
+    {
+        return shortMessage;
+    }
+    return "Force Stop. The Stop Button was pressed when it appears the Komputer was not running. \
 If so, please ignore this message. If the game was hung, I apologize - feel free to send the error here: \n\
 stephen.montague.viktory@gmail.com"
 }
@@ -6850,8 +7640,10 @@ function stopAndReset(resetKomputerButton = true)
 {
     clearIntervalsAndTimers();
     resetAllButtonStyles();
+    styleBoardForStop();
     clearHoldingUnits();
     resetGlobals(resetKomputerButton);
+    hideOptionsMenu();
     komputerLog("All Stop.");
 }
 
@@ -6885,6 +7677,29 @@ function styleButtonForRun()
 }
 
 
+function styleBoardForRun(color)
+{
+    // Add light halo to board.
+    let boardSpace = document.getElementById("Foundation_Elemental_" + GameVersion + "_boardSpace");
+    if (boardSpace)
+    {
+        const isGreen = (color === 2);
+        let colorName = isGreen ? "lime" : GamesByEmail.Viktory2Game.resourcePack.teamTitles[color].toLowerCase();
+        boardSpace.style.background = "radial-gradient(circle at top 51.25% left 50%, " + colorName + " 30%, transparent 72%)";  
+    }
+}
+
+
+function styleBoardForStop()
+{
+    let boardSpace = document.getElementById("Foundation_Elemental_" + GameVersion + "_boardSpace");
+    if (boardSpace)
+    {
+        boardSpace.style.background = "radial-gradient(circle at top 51.5% left 50%, lightblue 30%, transparent 72%)"; 
+    }
+}
+
+
 function resetKomputerButtonStyle(isGameWon = false, message = "Let Komputer Play")
 {
     let button = document.getElementById("KomputerButton_" + GameVersion);
@@ -6895,6 +7710,7 @@ function resetKomputerButtonStyle(isGameWon = false, message = "Let Komputer Pla
     {
         button.style.backgroundColor = 'lightsalmon';
     }
+    styleBoardForStop();
     resetButtonPositions();
 }
 
@@ -6924,19 +7740,30 @@ function resetButtonPositions(visible = true)
     let turboToggle = document.getElementById("TurboToggle_" + GameVersion);
     let turboToggleLabel = document.getElementById("TurboToggleLabel_" + GameVersion);
     let turboToggleInfo = document.getElementById("TurboInfo_" + GameVersion);
-    if (visible)
+    let komputerOptions = document.getElementById("KomputerOptions");
+    const baseReference = document.getElementById('Foundation_Elemental_' + GameVersion + '_bottomTeamTitles');
+    if (baseReference)
+    {
+        const baseTop = baseReference.getBoundingClientRect().top;
+        if (baseTop === 0)
+        {
+            visible = false;
+        }
+    }
+    if (visible && baseReference)
     {
         runButton.style.top = getRunButtonTop();
         stopButton.style.top = getStopButtonTop();
         darkModeToggle.style.top = getDarkModeToggleTop();
         darkModeLabel.style.top = getDarkModeToggleLabelTop();
-        soundToggle.style.top = getSoundToggleTop(); // getDarkModeToggleTop();
-        soundToggleLabel.style.top = getSoundToggleLabelTop();  //getDarkModeToggleLabelTop();
+        soundToggle.style.top = getSoundToggleTop(); 
+        soundToggleLabel.style.top = getSoundToggleLabelTop(); 
         turboToggle.style.top = getTurboButtonTop();
         turboToggleLabel.style.top = getTurboButtonLabelTop();
         turboToggleInfo.style.top = getTurboInfoTop();
         nationsDiv.style.top = getNationsDivTop();
         nationsDiv.style.left = getNationsDivLeft();
+        komputerOptions.style.top = getKomputerOptionsTop();
         runButton.style.visibility = ""; 
         stopButton.style.visibility = "";
         darkModeToggle.style.visibility = ""; 
@@ -6947,6 +7774,7 @@ function resetButtonPositions(visible = true)
         turboToggleLabel.style.visibility = "";
         turboToggleInfo.style.visibility = "hidden";
         nationsDiv.style.visibility = "";
+        komputerOptions.style.visibility = "";
         if (isOnPreviewTab())
         {
             if (gameEditor && gameEditorToggle)
@@ -6964,7 +7792,7 @@ function resetButtonPositions(visible = true)
             }
         }
     }
-    else
+    else  // Make invisible
     {
         runButton.style.visibility = "hidden"; 
         stopButton.style.visibility = "hidden";
@@ -6988,6 +7816,7 @@ function resetButtonPositions(visible = true)
         turboToggle.style.visibility = "hidden";
         turboToggleLabel.style.visibility = "hidden";
         turboToggleInfo.style.visibility = "hidden";
+        komputerOptions.style.visibility = "hidden";
     }
 }
 
@@ -7123,6 +7952,20 @@ function applyDarkMode(content, footer)
     gameMessageRead.style.backgroundColor = 'lightgrey';
     playerNotes.style.backgroundColor = 'lightgrey';
     gameMessageWrite.style.backgroundColor = 'lightgrey';
+    // Add light halo to board.
+    let boardSpace = document.getElementById("Foundation_Elemental_" + GameVersion + "_boardSpace");
+    if (boardSpace)
+    {
+        if (isKomputerReady)
+        {
+            styleBoardForStop();
+        }
+        else
+        {
+            let thisGame = findGameForActiveTab();
+            styleBoardForRun(thisGame.perspectiveColor);
+        }
+    }
 }
 
 
@@ -7172,6 +8015,14 @@ function applyLightMode(content, footer)
             }
         }
     }
+    // Double check the footer.
+    if (footer)
+    {
+        footer.style.backgroundColor = "#eeeeff";
+    }
+    // Remove halo from board.
+    let boardSpace = document.getElementById("Foundation_Elemental_" + GameVersion + "_boardSpace");
+    boardSpace.style.background = "";
     // Backup copy of content, for Game Editor or anything that might temporarily change backgroundColor.
     window.cacheContentBackgroundColor = content.style.backgroundColor;
 }
@@ -7429,6 +8280,7 @@ function addGameEditor(thisGame)
         gameEditorDiv.style.fontFamily = "Verdana";
         gameEditorDiv.style.padding = '4px';
         gameEditorDiv.innerText = "Game Editor";
+        makeNonSelectable(gameEditorDiv);
         addGameEditorToggle(gameEditorDiv);
         window.isEditorInputSelected = {};
         const inputOptions = [
@@ -7446,7 +8298,7 @@ function addGameEditor(thisGame)
         ];
         inputOptions.forEach(option => {
             window.isEditorInputSelected[option.value] = false;
-            const radioButtons = createRadioButton(option.value, editorInputListener);
+            const radioButtons = createRadioButton(option.value, editorInputListener, 'RadioGroup_GameEditor_');
             gameEditorDiv.appendChild(radioButtons);
         });
         document.body.appendChild(gameEditorDiv);
@@ -7467,14 +8319,15 @@ function createRadioButton(value, addListener, groupName = 'RadioGroup_') {
     radioButton.style.marginRight = '6px';
     addListener(radioButton);
     const label = document.createElement('label');
+    makeNonSelectable(label);
     label.innerText = value;
     label.htmlFor = radioButton.id; 
-    label.style.fontSize = "10px";
-    label.style.fontFamily = "Verdana";
+    label.style.fontSize = '10px';
+    label.style.fontFamily = 'Verdana';
     container.appendChild(radioButton);
     container.appendChild(label);
     addColorLabel(container, value);
-    addUnitLabel(container, value);
+    addUnitLabel(container, radioButton, value);
     return container;
 }
 
@@ -7488,6 +8341,7 @@ function addColorLabel(container, value)
     const color = 0;
     window.cacheColor = color;
     const colorLabel = document.createElement('label');
+    makeNonSelectable(colorLabel);
     const colorText = GamesByEmail.Viktory2Game.resourcePack.teamTitles[color];
     colorLabel.innerText = colorText;
     colorLabel.id = "colorLabel";
@@ -7506,7 +8360,8 @@ function addColorLabel(container, value)
             }
             const thisGame = findGameForActiveTab();
             const label = event.target;
-            const maxColors = thisGame.numberOfDistinctPlayers;
+            const playerCount = (thisGame.numberOfDistinctPlayers > 0) ? thisGame.numberOfDistinctPlayers : thisGame.teams.length;
+            const maxColors = playerCount;
             const nextColor = (window.cacheColor + 1) < maxColors ? window.cacheColor + 1 : 0;
             window.cacheColor = nextColor;
             const fontColor = GamesByEmail.Viktory2Game.resourcePack.teamFontColors[nextColor];
@@ -7532,7 +8387,7 @@ function addColorLabel(container, value)
 }
 
 
-function addUnitLabel(container, value)
+function addUnitLabel(container, radioButton, value)
 {
     if (value !== "Unit")
     {
@@ -7542,10 +8397,11 @@ function addUnitLabel(container, value)
     window.editorTypeIndex = 0;
     window.editorUnitType = window.editorUnitTypes[window.editorTypeIndex];
     const unitLabel = document.createElement('label');
+    makeNonSelectable(unitLabel);
     const unitText = window.editorUnitTypes[window.editorTypeIndex];
     unitLabel.innerText = unitText;
     unitLabel.id = "unitLabel";
-    unitLabel.htmlFor = "RadioGroup_Unit";
+    unitLabel.htmlFor = "RadioGroup_GameEditor_Unit";
     const fontColor = "thistle"; 
     unitLabel.style.color = fontColor;
     unitLabel.style.fontSize = "12px";
@@ -7565,6 +8421,9 @@ function addUnitLabel(container, value)
             window.editorUnitType = window.editorUnitTypes[window.editorTypeIndex]
             label.innerText = window.editorUnitType;
             label.style.color = '';
+            let radioButton = document.getElementById("RadioGroup_GameEditor_Unit");
+            radioButton.checked = true;
+            window.isEditorInputSelected[radioButton.value] = true;
         });
     unitLabel.addEventListener('mouseenter', (event) =>
         {
@@ -7692,7 +8551,7 @@ function gameEditorToggleClick(event, toggle)
         document.addEventListener('mouseup', gameEditorMouseUp);
         komputerLog("Game Editor: On");
         thisGame.maybeHideOverlay();
-        maybeSelectDefaultInput();
+        maybeSelectDefaultEditorInput();
         setTimeout(function(){ styleGameEditor(thisGame) }, 10);
     }
     else
@@ -7711,7 +8570,11 @@ function gameEditorToggleClick(event, toggle)
         thisGame.update();
         removeExcessUnits(thisGame);
     }
-    setTimeout(resetButtonPositions, 100);
+    setTimeout(function ()
+    {
+        resetButtonPositions();
+        updateKomputerOptions();
+    }, 100);
 }
 
 
@@ -7742,7 +8605,8 @@ function styleGameEditor(thisGame)
 
 function removeExcessUnits(thisGame)
 {
-    let colorCount = thisGame.numberOfDistinctPlayers;
+    const playerCount = (thisGame.numberOfDistinctPlayers > 0) ? thisGame.numberOfDistinctPlayers : thisGame.teams.length;
+    let colorCount = playerCount;
     for (let i = 0; i < colorCount; i++)
     {
         let tempCapital = null;
@@ -7854,7 +8718,7 @@ function gameEditorMouseDown(event, draggingMouse = false)
     {
         return; 
     }
-    maybeSelectDefaultInput();
+    maybeSelectDefaultEditorInput();
     window.isMouseDown = true;
     const xOffset = document.getElementById("Foundation_Elemental_" + GameVersion + "_pieces").getBoundingClientRect().left + window.scrollX; 
     const yOffset = document.getElementById("Foundation_Elemental_" + GameVersion + "_pieces").getBoundingClientRect().top + window.scrollY; 
@@ -7920,7 +8784,7 @@ function gameEditorMouseDown(event, draggingMouse = false)
         else if (output.type === "military")
         {
             output.data = getEditorUnitType();
-            if (piece.isPerimeter() && output.data !== 'f')
+            if (piece.isPerimeter() && output.data !== 'Frigate')
             {
                 return;
             }
@@ -7942,7 +8806,7 @@ function gameEditorMouseDown(event, draggingMouse = false)
             drawReset(thisGame, piece, output.data);
         }
         window.lastEditIndex = piece.index;
-        window.lastEditTime = Date.now();
+        window.lastClickTime = Date.now();
         return;
     }
 }
@@ -7950,11 +8814,11 @@ function gameEditorMouseDown(event, draggingMouse = false)
 
 function isGhostClick(draggingMouse)
 {
-    if (draggingMouse || !window.lastEditTime)
+    if (draggingMouse || !window.lastClickTime)
     {
         return false;
     }
-    const timeElapsed = Date.now() - window.lastEditTime;
+    const timeElapsed = Date.now() - window.lastClickTime;
     return timeElapsed < 100 ? true : false;
 }
 
@@ -8300,7 +9164,8 @@ function removeExcessUnit(piece, color, type)
 // Clone of codebase function that works on all player colors.
 function needsExtrasRemovedForAnyColor(thisGame)
 {
-    const colorCount = thisGame.numberOfDistinctPlayers;
+    const playerCount = (thisGame.numberOfDistinctPlayers > 0) ? thisGame.numberOfDistinctPlayers : thisGame.teams.length;
+    const colorCount = playerCount;
     for (let color = 0; color < colorCount; color++)
     {
         let unitCounts = thisGame.pieces.getUnitCounts(color);
@@ -8339,7 +9204,7 @@ function drawUnit(thisGame, piece, color, type)
     indeciesToReveal.push(piece.index);
     revealPieces(thisGame, indeciesToReveal);
     const newUnit = piece.addUnit(color, type);
-    newUnit.movementComplete = true;    
+    newUnit.movementComplete = (thisGame.perspectiveColor === color) ? false: true; 
     piece.updateUnitDisplay();
     thisGame.update();
     styleGameEditor(thisGame);
@@ -8446,7 +9311,7 @@ function drawReset(thisGame, piece, output)
 }
 
 
-function maybeSelectDefaultInput()
+function maybeSelectDefaultEditorInput()
 {
     for (const input in window.isEditorInputSelected)
     {
@@ -8455,7 +9320,7 @@ function maybeSelectDefaultInput()
             return;
         }
     }        
-    let radioButton = document.getElementById("RadioGroup_Plains");
+    let radioButton = document.getElementById("RadioGroup_GameEditor_Plains");
     if (radioButton)
     {
         radioButton.checked = true;
@@ -8641,6 +9506,7 @@ function multiplayerRestartButtonMouseClick(thisGame)
         hideMultiplayerForm();
         Foundation.$registry[formIndex].play();
         setTimeout(function(){ 
+            updateKomputerOptions();
             resetButtonPositions(); 
         }, 2000 );
     }
@@ -8858,22 +9724,23 @@ function addNations(thisGame, enableMenu = false)
         nationsDiv.style.padding = '4px';
     }
     nationsDiv.innerText = "Historic Nations";
-    addNationsToggle(thisGame, nationsDiv);
+    makeNonSelectable(nationsDiv);
+    addNationsToggle(nationsDiv);
     addNationsMenu(thisGame, nationsDiv);
     document.body.appendChild(nationsDiv);
     if (enableMenu)
     {
-        enableNations(thisGame);
+        enableNations();
     }
 }
 
 
-function addNationsToggle(thisGame, nationsDiv)
+function addNationsToggle(nationsDiv)
 {
     let toggle = document.createElement("input");
     toggle.setAttribute("type", "checkbox");
     toggle.id = "NationsToggle";
-    toggle.addEventListener('click', function(event){ nationsToggleClick(thisGame, event) });
+    toggle.addEventListener('click', function(event){ nationsToggleClick(event) });
 	let style = {position: 'relative', top: -18, left: 48, 'z-index': '9999', marginBottom: -8}; 
 	let toggleStyle = toggle.style;
 	Object.keys(style).forEach(key => toggleStyle[key] = style[key]);
@@ -8881,13 +9748,13 @@ function addNationsToggle(thisGame, nationsDiv)
 }
 
 
-function enableNations(thisGame)
+function enableNations()
 {
     let nationsToggle = document.getElementById("NationsToggle");
     if (nationsToggle)
     {
         nationsToggle.checked = true;
-        nationsToggleClick(thisGame, {srcElement: nationsToggle});
+        nationsToggleClick({srcElement: nationsToggle});
     }
 }
 
@@ -8902,46 +9769,50 @@ function hideNationsDiv()
 }
 
 
-function disableNations(thisGame)
+function disableNations()
 {
-    if (!thisGame)
-    {
-        thisGame = findGameForActiveTab();
-    }
     let nationsToggle = document.getElementById("NationsToggle");
     if (nationsToggle)
     {
         nationsToggle.checked = false;
-        nationsToggleClick(thisGame, {srcElement: nationsToggle});
+        nationsToggleClick({srcElement: nationsToggle});
     }
 }
 
 
-function nationsToggleClick(thisGame, event)
+function nationsToggleClick(event)
 {
+    let thisGame = findGameForActiveTab();
     window.KomputerNations.isActive = event.srcElement.checked;
     if (window.KomputerNations.isActive)
     {
-        fixNationsMenu(thisGame);
+        updateNationsMenu(thisGame);
     }
     thisGame.pieces.updateUnitDisplays();
     thisGame.updateTeamTitles();
-    komputerLog("NationsToggle: " + event.srcElement.checked);  
+    updateKomputerOptions();
     resetButtonPositions();
+    komputerLog("NationsToggle: " + event.srcElement.checked);  
 }
 
 
 function renameTeams(thisGame, useNations)
 {
-    for (let playerColor = 0; playerColor < thisGame.numberOfDistinctPlayers; playerColor++)
+    const playerCount = (thisGame.numberOfDistinctPlayers > 0) ? thisGame.numberOfDistinctPlayers : thisGame.teams.length;
+    for (let playerColor = 0; playerColor < playerCount; playerColor++)
     {
+        const player = thisGame.teams[playerColor].players[0];
         if (useNations)
         {
-            thisGame.teams[playerColor].players[0].title = getTeamNoun(getSelectedDescription(playerColor));
+            player.titleStash = player.title
+            player.title = getTeamNoun(getSelectedDescription(playerColor));
         }
         else
         {   
-            thisGame.teams[playerColor].players[0].title = "Player " + (playerColor + 1);
+            const previewTitle = "Player " + (playerColor + 1);
+            const customTitle = player.titleStash ? player.titleStash : player.title;
+            const nextTitle = thisGame.previewing ?  previewTitle: customTitle;
+            player.title = nextTitle;
         }
     } 
 }
@@ -9034,10 +9905,12 @@ function getTeamNoun(adjective)
 function addNationsMenu(thisGame, parent)
 {
     const nations = window.KomputerNations.menuOptions;
-    const maxNationCount = thisGame.numberOfDistinctPlayers;
+    const playerCount = (thisGame.numberOfDistinctPlayers > 0) ? thisGame.numberOfDistinctPlayers : thisGame.teams.length;
+    const maxNationCount = playerCount;
     for (let color = 0; color < maxNationCount; color++)
     {
-        let colorLabel = document.createElement("label")
+        let colorLabel = document.createElement("label");
+        makeNonSelectable(colorLabel);
         colorLabel.style.fontFamily = "Verdana";
         colorLabel.style.fontSize = "10px";
         colorLabel.style.margin = "2px";
@@ -9062,10 +9935,11 @@ function addNationsMenu(thisGame, parent)
 }
 
 
-function fixNationsMenu(thisGame)
+function updateNationsMenu(thisGame)
 {
     let selectorCount = 0;
-    const targetSelectorCount = thisGame.numberOfDistinctPlayers;
+    const playerCount = (thisGame.numberOfDistinctPlayers > 0) ? thisGame.numberOfDistinctPlayers : thisGame.teams.length;
+    const targetSelectorCount = playerCount;
     const maxCount = GamesByEmail.Viktory2Game.resourcePack.teamTitles.length;
     for (let i = 0; i < maxCount; i++)
     {
@@ -9222,6 +10096,7 @@ function addSoundToggle()
     document.body.appendChild(toggle);
     // Toggle Label
     let toggleLabel = document.createElement("label");
+    makeNonSelectable(toggleLabel);
     toggleLabel.id = "SoundToggleLabel_" + GameVersion;
     toggleLabel.htmlFor = "SoundToggle_" + GameVersion
     toggleLabel.innerText = "Sound";  
@@ -9782,7 +10657,8 @@ function stopAllSound()
         {
             for (const handle of sound.audioHandles)
             {
-                if (!handle.paused)
+                const isPlaying = (handle.currentTime > 0) && (handle.currentTime < handle.duration) && (handle.readyState > HTMLMediaElement.HAVE_CURRENT_DATA);
+                if (isPlaying && !handle.paused)
                 {
                     handle.pause();
                     komputerLog("Sound paused.");
@@ -9791,6 +10667,7 @@ function stopAllSound()
         }
     }
 }
+
 
 // Turbo Toggle
 
@@ -9818,6 +10695,7 @@ function addTurboToggle()
 function createTurboLabel(toggle)
 {
     let toggleLabel = document.createElement("label");
+    makeNonSelectable(toggleLabel);
     toggleLabel.htmlFor = toggle.id;
     toggleLabel.id = "TurboToggleLabel_" + GameVersion;
     toggleLabel.innerText = "Turbo";  
@@ -9830,6 +10708,7 @@ function createTurboLabel(toggle)
 function createTurboInfo(toggle)
 {
     let toggleInfo = document.createElement("label");
+    makeNonSelectable(toggleInfo);
     toggleInfo.htmlFor = toggle.id;
     toggleInfo.id = "TurboInfo_" + GameVersion;
     toggleInfo.innerText = "2x speed & skip some transit moves.";
@@ -9902,4 +10781,298 @@ function getTurbo(time)
         return time < 1000 ? time * 0.75 : time * 0.5;
     }
     return time;
+}
+
+
+// Komputer Options
+
+
+function addKomputerOptions(thisGame)
+{
+    if (document.getElementById("KomputerOptions"))
+    {
+        return;
+    }
+    let optionsDiv = document.createElement("div");
+    optionsDiv.id = "KomputerOptions";
+    optionsDiv.style.position = "absolute";
+    optionsDiv.style.top = getKomputerOptionsTop();
+    optionsDiv.style.left = "172px";
+    optionsDiv.style.display = "grid";
+    document.body.appendChild(optionsDiv);
+    let optionsLabel = createOptionsLabel(optionsDiv);
+    optionsDiv.appendChild(optionsLabel);
+    optionsDiv.appendChild(createOptionsMenu(thisGame));
+    selectDefaultKomputerOption();
+    addClickAwayListener();
+}
+
+
+function createOptionsLabel(optionsDiv)
+{
+    let optionsLabel = document.createElement("label");
+    makeNonSelectable(optionsLabel);
+    optionsLabel.innerText = "Options";
+    optionsLabel.htmlFor = optionsDiv.id;
+    let style = { zIndex: '9999', fontSize: '8px', fontFamily: "Verdana", textDecoration: 'underline', width: 'fit-content'};
+    Object.keys(style).forEach(key => optionsLabel.style[key] = style[key]);
+    optionsLabel.addEventListener('mouseenter', (event) =>
+        {
+            event.target.style.fontWeight = "bold";
+        });
+    optionsLabel.addEventListener('mouseleave', (event) =>
+        {
+            event.target.style.fontWeight = "normal";
+        });
+    optionsLabel.addEventListener('click', function(event)
+        {
+            const optionsMenu = event.target.nextElementSibling;
+            const nextDisplay = (optionsMenu.style.display === "none") ? "inline-block" : "none";
+            optionsMenu.style.display = nextDisplay;
+            optionsMenu.style.top = "";
+            const maxWindowY =  window.innerHeight;
+            const maxMenuY = optionsMenu.getBoundingClientRect().bottom;
+            if (maxWindowY < maxMenuY)
+            {
+                optionsMenu.style.top = optionsMenu.style.top - 106;
+            }
+            const nextVisibility = (optionsMenu.style.visibility === "hidden") ? "" : "hidden";
+            optionsMenu.style.visibility = nextVisibility;
+            updateKomputerOptions();
+        });
+    return optionsLabel;
+}
+
+
+function createOptionsMenu(thisGame)
+{
+    let optionsMenu = document.createElement("div");
+    optionsMenu.id = "KomputerOptionsMenu";
+    optionsMenu.innerText = "Komputer may...";
+    let style = { display: "none", visibility: "hidden", position: "relative", zIndex: 9999, fontSize: '10px', fontFamily: "Verdana", 
+        backgroundColor: "lightgrey", border: "thick solid darkgrey", marginTop: "1px", padding: "4px", paddingRight: "12px" };
+    Object.keys(style).forEach(key => optionsMenu.style[key] = style[key]);
+    optionsMenu.addEventListener('mouseleave', (event) =>
+        {
+            event.target.style.visibility = "hidden";
+            event.target.style.display = "none";
+        });
+    window.KomputerPlayOptions = {};
+    const inputOptions = [
+        {value: "Play One Turn"},
+        {value: "Play Selected"}    
+    ];
+    inputOptions.forEach(option => {
+        window.KomputerPlayOptions[option.value] = false;
+        const radioButton = createRadioButton(option.value, addKomputerPlayOptionListener, "RadioGroup_KomputerOptionsMenu_");
+        radioButton.style.margin = "2px";
+        radioButton.style.marginTop = "6px";
+        if (option.value === "Play Selected")
+        {
+            radioButton.style.marginTop = "-20px";
+            addKomputerOptionInputs(radioButton, thisGame);
+        }
+        optionsMenu.appendChild(radioButton);
+    });
+    return optionsMenu;
+}
+
+
+function addKomputerPlayOptionListener(radioButton)
+{
+    radioButton.addEventListener('change', () => 
+        {
+            Object.keys(window.KomputerPlayOptions).forEach(key => { window.KomputerPlayOptions[key] = false; });
+            window.KomputerPlayOptions[radioButton.value] = true;
+            radioButton.checked = window.KomputerPlayOptions[radioButton.value] ? true : false; 
+            komputerLog("Pressed: " + radioButton.value);  
+            if (radioButton.value === "Play One Turn")
+            {
+                selectAllInputOptions(false);
+            }
+            else
+            {
+                selectAllInputOptions();
+            }
+        }
+    )
+}
+
+
+function updateKomputerOptions()
+{   
+    let optionCount = 0;
+    for (let i = 0; document.getElementById("KomputerOptionInput_" + i); i++)
+    {
+        optionCount++;
+    }
+    let thisGame = findGameForActiveTab();
+    const playerCount = (thisGame.numberOfDistinctPlayers > 0) ? thisGame.numberOfDistinctPlayers : thisGame.teams.length;
+    if (playerCount !== optionCount)
+    {
+        let optionsMenu = document.getElementById("KomputerOptionsMenu");
+        let parent = optionsMenu.parentElement;
+        optionsMenu.remove();
+        parent.appendChild(createOptionsMenu(thisGame));
+    }
+    if (window.KomputerNations.isActive)
+    {
+        for (let i = 0; document.getElementById("KomputerOptionInput_" + i); i++)
+        {
+            let label = document.getElementById("KomputerOptionInput_" + i).labels[0];
+            const nationSelectorForLabel = document.getElementById("NationSelector_" + i);
+            const nationSelectorColor = nationSelectorForLabel.value;
+            label.innerText = getSelectedDescription(nationSelectorColor);
+        }
+    }
+    else
+    {
+        for (let i = 0; document.getElementById("KomputerOptionInput_" + i); i++)
+        {
+            let label = document.getElementById("KomputerOptionInput_" + i).labels[0];
+            label.innerText = GamesByEmail.Viktory2Game.resourcePack.teamTitles[i];
+        }
+    }
+    selectDefaultKomputerOption();
+}
+
+
+function addKomputerOptionInputs(parent, thisGame)
+{
+    const playerCount = (thisGame.numberOfDistinctPlayers > 0) ? thisGame.numberOfDistinctPlayers : thisGame.teams.length;
+    let colorCount = playerCount;
+    for (let color = 0; color < colorCount; color++)
+    {
+        let input = document.createElement("input");
+        input.type = "checkbox";
+        input.id = "KomputerOptionInput_" + color;
+        input.style.marginTop = "44px";
+        if (color === 0)
+        {
+            input.style.marginLeft = "-32px";
+        }
+        input.addEventListener("click", function()
+        {
+            document.getElementById("RadioGroup_KomputerOptionsMenu_Play One Turn").checked = false;
+            window.KomputerPlayOptions["Play One Turn"] = false;
+            document.getElementById("RadioGroup_KomputerOptionsMenu_Play Selected").checked = true;
+            window.KomputerPlayOptions["Play Selected"] = true;
+        });
+        let label = document.createElement("label");
+        makeNonSelectable(label);
+        label.innerText= KomputerNations.isActive ? getSelectedDescription(color) : GamesByEmail.Viktory2Game.resourcePack.teamTitles[color];
+        label.htmlFor = input.id;
+        let style = { fontSize: '10px', fontFamily: "Verdana", marginRight: "4px", marginTop: "42px"};
+        Object.keys(style).forEach(key => label.style[key] = style[key]);
+        parent.appendChild(input);
+        parent.appendChild(label);
+    }
+}
+
+
+function addClickAwayListener()
+{
+    let content = document.getElementById("Foundation_Elemental_1_content");
+    if (!content)
+    {
+        content = document.getElementById("Foundation_Elemental_2_gameContainer");
+    }
+    if (content)
+    {
+        content.addEventListener("click", function()
+        {
+            hideOptionsMenu();
+        });
+    }
+}
+
+
+function hideOptionsMenu()
+{
+    let optionsMenu = document.getElementById("KomputerOptionsMenu");
+    optionsMenu.style.visibility = "hidden";
+    optionsMenu.style.display = "none";
+}
+
+
+function playingNextTurn(thisGame)
+{
+    const color = thisGame.player.team.color;
+    const newTurn = true;
+    if (thisGame.player.isMyTurn() && isKomputerPlayApproved(color, newTurn))
+    {
+        window.isKomputerReady = true;
+        runKomputerClick(thisGame);
+        return true;
+    }
+    return false;
+}
+
+
+function isKomputerPlayApproved(color, newTurn)
+{
+    let playOneInput = document.getElementById("RadioGroup_KomputerOptionsMenu_Play One Turn"); 
+    let colorInput = document.getElementById("KomputerOptionInput_" + color);
+    if (playOneInput && colorInput)
+    {
+        return (colorInput.checked || (playOneInput.checked && !newTurn));
+    }
+    return false;
+}
+
+
+function getKomputerOptionsTop()
+{
+    return getTurboButtonLabelTop();
+}
+
+
+function selectDefaultKomputerOption()
+{
+    for (const option in window.KomputerPlayOptions)
+    {
+        if (window.KomputerPlayOptions[option] === true)
+        {
+            let radioButton = document.getElementById("RadioGroup_KomputerOptionsMenu_" + option);
+            radioButton.checked = true;
+            return;
+        }
+    }        
+    let defaultOption = "Play One Turn";
+    let radioButton = document.getElementById("RadioGroup_KomputerOptionsMenu_" + defaultOption);
+    if (radioButton)
+    {
+        radioButton.checked = true;
+        window.KomputerPlayOptions[defaultOption] = true;
+        selectAllInputOptions(false);
+    }
+}
+
+
+function selectAllInputOptions(turnOn = true)
+{
+    for (let i = 0; document.getElementById("KomputerOptionInput_" + i); i++)
+    {
+        let input = document.getElementById("KomputerOptionInput_" + i);
+        input.checked = turnOn;
+    }
+}
+
+
+function makeNonSelectable(element)
+{
+    if (!element || !element.style)
+    {
+        return;
+    }
+    const none = "none";
+    const styleAttributes = {
+        "-webkit-touch-callout": none, /* iOS Safari */
+          "-webkit-user-select": none, /* Safari */
+           "-khtml-user-select": none, /* Konqueror HTML */
+             "-moz-user-select": none, /* Old Firefox */
+              "-ms-user-select": none, /* Internet Explorer */
+                  "user-select": none /* Non-prefixed, for 80% of browsers */
+    }
+    Object.keys(styleAttributes).forEach(key => element.style[key] = styleAttributes[key]);
 }
