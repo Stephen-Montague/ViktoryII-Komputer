@@ -406,7 +406,7 @@ function clearLastAction(thisGame)
     const isNotCapitalMovePhase = thisGame.movePhase !== 2;
     if (isNotCapitalMovePhase && activeExploration.length > 0)
     {
-        thisGame.playOptions.mapCustomizationData = shuffle(activeExploration);
+        thisGame.playOptions.mapCustomizationData = shuffleText(activeExploration);
         thisGame.customizeMapDoAll(true);
     }
     let overlayCommit = document.getElementById("Foundation_Elemental_" + GameVersion + "_overlayCommit");
@@ -481,7 +481,7 @@ function moveUnits(thisGame)
                 }
                 else
                 {
-                    orderByDistanceToEnemy(thisGame, movingUnits);
+                    shuffle(movingUnits);
                     prepareNextUnit(movingUnits);
                 }
                 const isHoldingWave = false;
@@ -823,7 +823,7 @@ function prepareNextUnit(unitList)
     {
         return;
     }
-    if (lastMovedUnit.movementComplete || lastMovedUnit.piece.hasEnemy(lastMovedUnit.color, lastMovedUnit.rulerColor) || !lastMovedUnit.piece)
+    if (lastMovedUnit.movementComplete || lastMovedUnit.piece.hasEnemy(lastMovedUnit.color, lastMovedUnit.rulerColor))
     {
         window.lastMovedUnit = null;
         return;
@@ -842,7 +842,7 @@ function prepareNextUnit(unitList)
         {
             continue;
         }
-        if (unit.index === lastMovedUnit.index && unit.type === lastMovedUnit.type && unit.piece.index === lastMovedUnit.piece.index)
+        if ((unit.index === lastMovedUnit.index) && (unit.type === lastMovedUnit.type) && (unit.piece.index === lastMovedUnit.piece.index))
         {
             nextUnitIndex = i;
             break;
@@ -5878,10 +5878,29 @@ function getRandomIndexExclusive(max)
 }
 
 
-function shuffle(string)
+function shuffleText(string)
 {
-    // Schwartzian Transform, from anonymous on Stackoverflow - see Wikipedia for description.
+    // Schwartzian - split string, map each value to a random value, sort by that value, rejoin.
     return string.split("").map(v => [v, Math.random()]).sort((a, b) => a[1] - b[1]).map(v => v[0]).join("");
+}
+
+
+function shuffle(array) 
+{
+    // Durstenfeld - backwards iterating random swaps of an array in place.
+    for (let i = array.length - 1; i > 0; i--) 
+    {
+        const j = Math.floor(Math.random() * (i + 1));
+        const temp = array[i];
+        array[i] = array[j];
+        array[j] = temp;
+    }
+}
+
+
+function shuffle(array)
+{
+    return array.map(v => [v, Math.random()]).sort((a, b) => a[1] - b[1]).map(v => v[0]);
 }
 
 

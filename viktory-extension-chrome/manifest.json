@@ -9,7 +9,7 @@
     "name": "Viktory II Nations",
     "permissions": ["scripting", "tabs"],
     "host_permissions": ["http://gamesbyemail.com/Games/Viktory2*", "http://gamesbyemail.com/Games/Play*"],
-    "version": "2025.5.24.0",
+    "version": "2025.5.25.0",
     "icons": {
         "48": "img/icon-frigate-48.png",
         "128": "img/icon-frigate-128.png"
