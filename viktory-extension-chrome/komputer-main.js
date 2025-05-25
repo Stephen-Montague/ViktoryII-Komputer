@@ -5898,12 +5898,6 @@ function shuffle(array)
 }
 
 
-function shuffle(array)
-{
-    return array.map(v => [v, Math.random()]).sort((a, b) => a[1] - b[1]).map(v => v[0]);
-}
-
-
 // Clone for an original codebase function with a few mods to support automated play.
 function moveUnitSimulateMouseDown(thisGame, screenPoint, type)
 {
