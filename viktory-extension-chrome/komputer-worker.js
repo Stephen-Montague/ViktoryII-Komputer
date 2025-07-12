@@ -7,16 +7,21 @@ If you'd like to see game code before anything loads, you can find the folder fo
 C:\\Users\\[UserName]\\AppData\\Local\\Google\\Chrome\\User Data\\Default\\Extensions\\[ExtensionId]\\komputer-main.js \n\
 Have a good one.");
 
+
 chrome.action.onClicked.addListener(tab => 
     {
+        console.log("Loading Viktory II Nations as requested.")
         loadScript(tab.id);
     }
 );
 
+
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => 
     {
-        if (tab.url.includes("http://gamesbyemail.com/Games/Viktory2")) 
-        { 
+        if (changeInfo.status === "complete" && tab.url &&
+        (tab.url.includes("http://gamesbyemail.com/Games/Viktory2") || tab.url.includes("http://www.gamesbyemail.com/Games/Viktory2#Preview")))
+        {
+            console.log("Loading Viktory II Nations for GamesByEmail."); 
             loadScript(tabId);
         }
     }
@@ -40,6 +45,14 @@ async function loadScript(targetTabId)
         world : "MAIN"
     });  
 
+    const styleURL = chrome.runtime.getURL('');
+    chrome.scripting.executeScript({
+        target : {tabId : targetTabId},
+        func: addStyleSource,
+        args: [styleURL],
+        world : "MAIN"
+    });  
+
     chrome.scripting.executeScript({
         target : {tabId : targetTabId},
         files : [ "komputer-main.js" ],
@@ -57,3 +70,7 @@ function addImageSource(url)
     window.KomputerImagePath = url;
 }
 
+function addStyleSource(url)
+{
+    window.KomputerStyle = url;
+}

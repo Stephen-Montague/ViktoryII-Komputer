@@ -1,5 +1,12 @@
 {
-    "action": {},
+    "action": 
+    {
+        "default_icon": 
+        {
+            "48": "img/icon-frigate-48.png",
+            "128": "img/icon-frigate-128.png"
+        }
+    },
     "author": "stephen.montague.viktory@gmail.com",
     "background": {
         "service_worker": "komputer-worker.js"
@@ -8,14 +15,14 @@
     "manifest_version":3,
     "name": "Viktory II Nations",
     "permissions": ["scripting", "tabs"],
-    "host_permissions": ["http://gamesbyemail.com/Games/Viktory2*", "http://gamesbyemail.com/Games/Play*"],
-    "version": "2025.5.27.0",
+    "host_permissions": ["http://gamesbyemail.com/*", "http://www.gamesbyemail.com/*"],
+    "version": "2025.7.6.0",
     "icons": {
         "48": "img/icon-frigate-48.png",
         "128": "img/icon-frigate-128.png"
     },
     "web_accessible_resources": [ { 
-        "matches": ["http://gamesbyemail.com/*"],
+        "matches": ["http://gamesbyemail.com/*", "http://www.gamesbyemail.com/*"],
         "resources": [
             "img/Units_16_nations.png",
             "sound/battleInfantry1.ogg", 
