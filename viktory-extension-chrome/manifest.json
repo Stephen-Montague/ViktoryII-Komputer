@@ -16,7 +16,7 @@
     "name": "Viktory II Nations",
     "permissions": ["scripting", "tabs"],
     "host_permissions": ["http://gamesbyemail.com/*", "http://www.gamesbyemail.com/*"],
-    "version": "2025.7.6.0",
+    "version": "2025.11.07.4",
     "icons": {
         "48": "img/icon-frigate-48.png",
         "128": "img/icon-frigate-128.png"
@@ -24,6 +24,10 @@
     "web_accessible_resources": [ { 
         "matches": ["http://gamesbyemail.com/*", "http://www.gamesbyemail.com/*"],
         "resources": [
+            "img/Board_2V_Clouds.png",
+            "img/Board_3V_Clouds.png",
+            "img/Board_4V_Clouds.png",
+            "img/Board_5678V_Clouds.png",
             "img/Units_16_nations.png",
             "sound/battleInfantry1.ogg", 
             "sound/battleInfantry2.ogg",

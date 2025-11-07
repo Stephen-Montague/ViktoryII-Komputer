@@ -10,7 +10,7 @@ Have a good one.");
 
 chrome.action.onClicked.addListener(tab => 
     {
-        console.log("Loading Viktory II Nations as requested.")
+        console.log("Loading Viktory II Nations Expansion for GamesByEmail as requested.")
         loadScript(tab.id);
     }
 );
@@ -21,7 +21,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) =>
         if (changeInfo.status === "complete" && tab.url &&
         (tab.url.includes("http://gamesbyemail.com/Games/Viktory2") || tab.url.includes("http://www.gamesbyemail.com/Games/Viktory2#Preview")))
         {
-            console.log("Loading Viktory II Nations for GamesByEmail."); 
+            console.log("Preloading Nations Explansion for Viktory II Preview."); 
             loadScript(tabId);
         }
     }
