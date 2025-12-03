@@ -45,13 +45,6 @@ async function loadScript(targetTabId)
         world : "MAIN"
     });  
 
-    const styleURL = chrome.runtime.getURL('');
-    chrome.scripting.executeScript({
-        target : {tabId : targetTabId},
-        func: addStyleSource,
-        args: [styleURL],
-        world : "MAIN"
-    });  
 
     chrome.scripting.executeScript({
         target : {tabId : targetTabId},
@@ -68,9 +61,4 @@ function addAudioSource(url)
 function addImageSource(url)
 {
     window.KomputerImagePath = url;
-}
-
-function addStyleSource(url)
-{
-    window.KomputerStyle = url;
 }
